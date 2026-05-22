@@ -1,0 +1,3 @@
+# TCP support is provided via Python's built-in socket module, which is part of the standard library.
+PyQt5==5.15.9
+pyserial==3.5
