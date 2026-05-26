@@ -88,15 +88,67 @@ class VideoWidget(QLabel):
         # Always use Pelco-D controller if available
         if hasattr(main_window, 'pan_tilt_controller') and main_window.pan_tilt_controller.connected:
             ptz_controller = main_window.pan_tilt_controller
-            is_pelco_device = True
+            # Check if the controller has the service protocol available (TechLazer)
+            has_service_protocol = hasattr(ptz_controller, 'service_protocol') and ptz_controller.service_protocol.connected
         else:
             # Since we removed camera 1 PTZ panel, only camera 2 is available
             if self == main_window.video_widget2 and hasattr(main_window, 'ptz_controller2'):
                 ptz_controller = main_window.ptz_controller2
-                is_pelco_device = False
+                # Check if the controller has the service protocol available (TechLazer)
+                has_service_protocol = hasattr(ptz_controller, 'service_protocol') and ptz_controller.service_protocol.connected
             else:
                 QTimer.singleShot(0, lambda: main_window.status_bar.showMessage("No PTZ controller available", 3000))
                 return
+        
+        # Convert normalized coordinates to PTZ movements
+        # Center is (0.5, 0.5), so calculate offset from center
+        x_offset = x_norm - 0.5
+        y_offset = 0.5 - y_norm  # Invert Y axis (screen Y increases downward)
+        
+        # Check if we should use the TechLazer service protocol for absolute positioning
+        if has_service_protocol:
+            # Use TechLazer service protocol for precise absolute positioning
+            try:
+                # Calculate target pan and tilt positions based on normalized coordinates
+                # Pan range: 0 to 359.99 degrees (mapped from 0.0 to 1.0)
+                target_pan = x_norm * 359.99
+                
+                # Tilt range: -90 to +45 degrees (mapped from 0.0 to 1.0)
+                # First map to 0-135 range (0.0=0, 1.0=135), then shift to -90 to +45
+                tilt_range = 135  # Range from -90 to +45 = 135 degrees
+                target_tilt_unshifted = y_norm * tilt_range  # 0 to 135
+                target_tilt = target_tilt_unshifted - 90  # Shift to -90 to +45 range
+                
+                # Ensure values are within bounds
+                target_pan = max(0.0, min(359.99, target_pan))
+                target_tilt = max(-90.0, min(45.0, target_tilt))
+                
+                # Send absolute positioning commands using TechLazer service protocol
+                success_pan = ptz_controller.service_protocol.move_to_pan_position(target_pan, 20.0)
+                success_tilt = ptz_controller.service_protocol.move_to_tilt_position(target_tilt, 10.0)
+                
+                if success_pan and success_tilt:
+                    msg = f"Moved to absolute position - Pan: {target_pan:.2f}°, Tilt: {target_tilt:.2f}°"
+                    print(msg)
+                    QTimer.singleShot(0, lambda: main_window.status_bar.showMessage(msg, 3000))
+                else:
+                    # Fallback to other protocols if service protocol fails
+                    self._fallback_move_to_position(ptz_controller, x_norm, y_norm)
+                
+            except Exception as e:
+                error_msg = f"Error using TechLazer service protocol: {str(e)}, falling back to other protocols"
+                print(error_msg)
+                self._fallback_move_to_position(ptz_controller, x_norm, y_norm)
+        else:
+            # Use other protocols (Pelco-D or ONVIF) if service protocol is not available
+            self._fallback_move_to_position(ptz_controller, x_norm, y_norm)
+    
+    def _fallback_move_to_position(self, ptz_controller, x_norm, y_norm):
+        """Fallback method to use Pelco-D or ONVIF protocols for positioning"""
+        main_window = self.window()
+        
+        # Determine if this is a Pelco-D device
+        is_pelco_device = hasattr(ptz_controller, 'address_spin')
         
         # Convert normalized coordinates to PTZ movements
         # Center is (0.5, 0.5), so calculate offset from center
