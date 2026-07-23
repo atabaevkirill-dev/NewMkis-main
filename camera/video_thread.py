@@ -133,20 +133,28 @@ class VideoThread(QThread):
                             
                             # Test if we can read a frame
                             print(f"[LOG] Testing frame read for thermal camera {self.camera_id}")
-                            ret, test_frame = self.cap.read()
-                            print(f"[LOG] Frame read result for thermal camera {self.camera_id}: ret={ret}, frame_valid={test_frame is not None and test_frame.size > 0 if test_frame is not None else 'None'}")
-                            
+                            # Check if self.cap is valid before trying to read
+                            if self.cap is not None:
+                                ret, test_frame = self.cap.read()
+                                print(f"[LOG] Frame read result for thermal camera {self.camera_id}: ret={ret}, frame_valid={test_frame is not None and test_frame.size > 0 if test_frame is not None else 'None'}")
+                            else:
+                                print(f"[LOG] FAILED: self.cap is None for thermal camera {self.camera_id}")
+                                ret = False
+                                test_frame = None
+
                             if ret and test_frame is not None and test_frame.size > 0:
                                 print(f"[LOG] SUCCESS: Connected to thermal camera {self.camera_id} with codec {codec}")
                                 connected = True
                                 break
                             else:
                                 print(f"[LOG] FAILED: Codec {codec} didn't return valid frames for thermal camera {self.camera_id}")
-                                self.cap.release()
+                                if self.cap is not None:
+                                    self.cap.release()
                                 
                         except Exception as e:
                             print(f"[LOG] ERROR: Exception trying codec {codec} for thermal camera {self.camera_id}: {str(e)}")
-                            if self.cap.isOpened():
+                            # Check if self.cap exists before calling isOpened
+                            if self.cap is not None and self.cap.isOpened():
                                 self.cap.release()
                     
                     if not connected:
@@ -161,9 +169,14 @@ class VideoThread(QThread):
                         
                         # Test connection
                         time.sleep(2)  # Wait for connection to establish
-                        ret, test_frame = self.cap.read()
-                        print(f"[LOG] Generic connection test result: ret={ret}, frame_valid={test_frame is not None and test_frame.size > 0 if test_frame is not None else 'None'}")
-                        
+                        # Check if self.cap is valid before trying to read
+                        if self.cap is not None:
+                            ret, test_frame = self.cap.read()
+                            print(f"[LOG] Generic connection test result: ret={ret}, frame_valid={test_frame is not None and test_frame.size > 0 if test_frame is not None else 'None'}")
+                        else:
+                            print(f"[LOG] FAILED: self.cap is None for thermal camera {self.camera_id}")
+                            ret = False
+                            test_frame = None
                         if not (ret and test_frame is not None and test_frame.size > 0):
                             raise Exception(f"Could not establish connection to thermal camera {self.camera_id}")
                 
@@ -216,15 +229,21 @@ class VideoThread(QThread):
                         raise Exception(f"Could not open video stream for Camera {self.camera_id}")
                 
                 # At this point, we should have a working connection
-                print(f"[LOG] VideoCapture initialization completed for Camera {self.camera_id}. isOpened: {self.cap.isOpened() if self.cap else False}")
+                print(f"[LOG] VideoCapture initialization completed for Camera {self.camera_id}. isOpened: {self.cap.isOpened() if self.cap and hasattr(self.cap, 'isOpened') else False}")
                 
-                if not self.cap or not self.cap.isOpened():
+                if not self.cap or not (self.cap and hasattr(self.cap, 'isOpened')) or not self.cap.isOpened():
                     raise Exception(f"VideoCapture not properly initialized for Camera {self.camera_id}")
                 
                 # Successfully opened, send first frame
                 print(f"[LOG] Attempting to read first frame from Camera {self.camera_id}")
-                ret, first_frame = self.cap.read()
-                print(f"[LOG] First frame read result for Camera {self.camera_id}: ret={ret}, frame_valid={first_frame is not None and first_frame.size > 0 if first_frame is not None else 'None'}")
+                # Check if self.cap is valid before attempting to read first frame
+                if self.cap is not None:
+                    ret, first_frame = self.cap.read()
+                    print(f"[LOG] First frame read result for Camera {self.camera_id}: ret={ret}, frame_valid={first_frame is not None and first_frame.size > 0 if first_frame is not None else 'None'}")
+                else:
+                    ret = False
+                    first_frame = None
+                    print(f"[LOG] FAILED: self.cap is None when attempting first frame read for Camera {self.camera_id}")
                 
                 if ret and first_frame is not None and first_frame.size > 0:
                     print(f"[LOG] SUCCESS: First frame received from Camera {self.camera_id}, emitting signal")
@@ -238,7 +257,12 @@ class VideoThread(QThread):
                         if not self._run_flag:
                             break
                         time.sleep(0.2)
-                        ret, first_frame = self.cap.read()
+                        # Check if self.cap is valid before attempting to read
+                        if self.cap is not None:
+                            ret, first_frame = self.cap.read()
+                        else:
+                            ret = False
+                            first_frame = None
                         print(f"[LOG] Retry {attempt+1}/5 for Camera {self.camera_id}: ret={ret}, frame_valid={first_frame is not None and first_frame.size > 0 if first_frame is not None else 'None'}")
                         
                         if ret and first_frame is not None and first_frame.size > 0:
@@ -269,7 +293,14 @@ class VideoThread(QThread):
                 
                 while self._run_flag:
                     try:
-                        ret, cv_img = self.cap.read()
+                        # Check if self.cap exists before attempting to read
+                        if self.cap is not None:
+                            ret, cv_img = self.cap.read()
+                        else:
+                            ret = False
+                            cv_img = None
+                            print(f"[LOG] self.cap is None in main reading loop for Camera {self.camera_id}")
+                        
                         if ret and cv_img is not None and cv_img.size > 0:
                             # Reset failure counter on success
                             frame_read_failure_count = 0
