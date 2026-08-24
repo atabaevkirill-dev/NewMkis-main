@@ -971,17 +971,22 @@ class MainWindow(QMainWindow):
         else:
             # Use a dummy URL if no IP and no custom URL
             rtsp_url1 = "http://0.0.0.0/dummy"
-        
-        if cam2_custom_url:
-            rtsp_url2 = cam2_custom_url
-        elif cam2_ip:
-            # For thermal camera (camera 2), construct the special URL format if no custom URL provided
-            # Using the format that worked: rtsp://IP:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif
-            rtsp_url2 = f"rtsp://{cam2_config.get('username', '')}:{cam2_config.get('password', '')}@{cam2_ip}:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif"
-        else:
-            # Use a dummy URL if no IP and no custom URL
-            rtsp_url2 = "http://0.0.0.0/dummy"
-        
+
+        # Determine RTSP URL for camera2 (thermal)
+        # For camera2, we will always construct the URL from individual config fields (ip, user, pass) and a fixed path for the thermal camera.
+        # We ignore the 'custom_rtsp_url' and 'stream_path' fields for camera2.
+        cam2_username = cam2_config.get('username', '')
+        cam2_password = cam2_config.get('password', '')
+
+        # Construct the URL for camera2 explicitly with the known thermal camera path
+        cam2_rtsp_port = cam2_config.get('rtsp_port', 554)
+        rtsp_url2 = f"rtsp://{cam2_username}:{cam2_password}@{cam2_ip}:{cam2_rtsp_port}/av0_0"
+
+        # Debug prints to confirm the final URLs and config values used
+        print(f"[DEBUG] Config used for Camera 2 - IP: {cam2_ip}, User: {cam2_username}, Pass: *** (hidden)")
+        print(f"[DEBUG] Final RTSP URL for Camera 1: {rtsp_url1}")
+        print(f"[DEBUG] Final RTSP URL for Camera 2 (Thermal): {rtsp_url2}")
+
         # Display connection attempt info to status bar
         self.status_bar.showMessage(f"Connecting to Camera 1: {cam1_ip or 'N/A'}, Camera 2 (Thermal): {cam2_ip or 'N/A'}", 3000)
         
