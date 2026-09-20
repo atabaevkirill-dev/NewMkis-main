@@ -697,13 +697,7 @@ class MainWindow(QMainWindow):
                 # Initialize ONVIF PTZ in background - errors will be handled internally by PTZController
                 self.ptz_controller2.init_ptz()
                 
-                # Wait briefly to allow initialization to complete and check if it succeeded
-                import time
-                time.sleep(0.5)  # Give some time for initialization
-                
-                if not self.ptz_controller2.initialized:
-                    print(f"Warning: PTZ controller for camera 2 ({cam2_config.get('ip', '')}) failed to initialize")
-                    self.status_bar.showMessage(f"Camera 2 PTZ not connected: {cam2_config.get('ip', '')}", 5000)
+                # PTZ initialization is asynchronous; status is reported by its callbacks.
             except Exception as e:
                 error_msg = f"Error creating PTZ controller 2: {str(e)}"
                 print(error_msg)
@@ -973,19 +967,17 @@ class MainWindow(QMainWindow):
             rtsp_url1 = "http://0.0.0.0/dummy"
 
         # Determine RTSP URL for camera2 (thermal)
-        # For camera2, we will always construct the URL from individual config fields (ip, user, pass) and a fixed path for the thermal camera.
-        # We ignore the 'custom_rtsp_url' and 'stream_path' fields for camera2.
+        # Prefer the explicitly configured URL for camera 2 as documented by the UI.
         cam2_username = cam2_config.get('username', '')
         cam2_password = cam2_config.get('password', '')
 
         # Construct the URL for camera2 explicitly with the known thermal camera path
         cam2_rtsp_port = cam2_config.get('rtsp_port', 554)
-        rtsp_url2 = f"rtsp://{cam2_username}:{cam2_password}@{cam2_ip}:{cam2_rtsp_port}/av0_0"
+        rtsp_url2 = cam2_custom_url or f"rtsp://{cam2_username}:{cam2_password}@{cam2_ip}:{cam2_rtsp_port}{cam2_config.get('stream_path', '/av0_0')}"
 
         # Debug prints to confirm the final URLs and config values used
         print(f"[DEBUG] Config used for Camera 2 - IP: {cam2_ip}, User: {cam2_username}, Pass: *** (hidden)")
-        print(f"[DEBUG] Final RTSP URL for Camera 1: {rtsp_url1}")
-        print(f"[DEBUG] Final RTSP URL for Camera 2 (Thermal): {rtsp_url2}")
+        print("[DEBUG] RTSP URLs prepared (credentials redacted)")
 
         # Display connection attempt info to status bar
         self.status_bar.showMessage(f"Connecting to Camera 1: {cam1_ip or 'N/A'}, Camera 2 (Thermal): {cam2_ip or 'N/A'}", 3000)

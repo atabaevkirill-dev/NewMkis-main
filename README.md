@@ -1,5 +1,7 @@
 # OnCam - Camera Monitoring and PTZ Control Application
 
+> Активная переделка интерфейса ведётся в [`desktop/`](desktop/README.md): Tauri + React, единая поверхность двух камер, выдвижные панели, сервисный протокол TL.0009, профили качки и безопасное хранение паролей. Инструкция клонирования и запуска на другой машине находится в [desktop/README.md](desktop/README.md#клонирование-на-другую-машину). Старое PyQt-приложение остаётся доступным на время поэтапной миграции аппаратного слоя.
+
 OnCam is a Python application that provides camera monitoring and PTZ (Pan-Tilt-Zoom) control system with support for both ONVIF PTZ cameras and Pelco-D protocol pan-tilt units.
 
 ## Features
@@ -37,13 +39,13 @@ pip install -r requirements.txt
 To run the application:
 
 ```bash
-python run_app.py
+python -m core.run_app
 ```
 
 Or directly:
 
 ```bash
-python main.py
+python -m core.main
 ```
 
 ## Creating a Standalone Executable

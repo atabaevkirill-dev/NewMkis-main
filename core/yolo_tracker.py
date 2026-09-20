@@ -99,29 +99,26 @@ class YOLOTracker:
     YOLO-based object detection and tracking for video streams
     """
     
-    def __init__(self, model_path: str = "yolov5s.pt", conf_threshold: float = 0.5, iou_threshold: float = 0.4):
+    def __init__(self, model_path: str = "yolov5su.pt", conf_threshold: float = 0.5, iou_threshold: float = 0.4):
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Load YOLO model using ultralytics directly
         try:
-            # Use yolov5s model from ultralytics
-            self.model = YOLO('yolov5s.pt')
-            logger.info("Successfully loaded YOLO model from default location")
-        except FileNotFoundError as e:
-            logger.warning(f"Default YOLO model not found: {e}")
-            try:
-                # If direct loading fails, try with full path
-                import os
-                model_path = os.path.join(os.path.dirname(__file__), model_path)
-                self.model = YOLO(model_path)
-                logger.info(f"Successfully loaded YOLO model from local path: {model_path}")
-            except Exception as e2:
-                logger.error(f"Failed to load local YOLO model: {e2}", exc_info=True)
-                self.model = None
+            import os
+            candidates = [
+                model_path,
+                os.path.join(os.path.dirname(__file__), os.path.basename(model_path)),
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), os.path.basename(model_path)),
+            ]
+            local_path = next((path for path in candidates if os.path.isfile(path)), None)
+            if local_path is None:
+                raise FileNotFoundError(f"YOLO model not found: {model_path}")
+            self.model = YOLO(local_path)
+            logger.info("Successfully loaded YOLO model from %s", local_path)
         except Exception as e:
-            logger.error(f"Unexpected error loading YOLO model: {e}", exc_info=True)
+            logger.error(f"Failed to load YOLO model: {e}", exc_info=True)
             self.model = None
         
         if self.model:

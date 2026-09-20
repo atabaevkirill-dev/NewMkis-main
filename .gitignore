@@ -1,31 +1,31 @@
-```gitignore
-# Python compiled files
+# Python
 *.pyc
 __pycache__/
-
-# Dependencies
 venv/
 .venv/
-node_modules/
-
-# Logs and temp files
-*.log
-*.tmp
-
-# Environment files
-.env
-.env.local
-*.env.*
-
-# Editors
-.vscode/
-.idea/
-
-# Coverage reports
+.pytest_cache/
 .coverage
 coverage/
 htmlcov/
 
-# Pytest cache
-.pytest_cache/
-```
+# JavaScript / Tauri
+node_modules/
+dist/
+target/
+desktop/src-tauri/gen/
+
+# Local configuration and secrets
+.env
+.env.local
+*.env.*
+config.json
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
