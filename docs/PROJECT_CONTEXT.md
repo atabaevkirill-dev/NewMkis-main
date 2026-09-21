@@ -62,7 +62,7 @@ The repository currently contains a mature but tangled Python/PyQt program and a
 - saved legacy config restricted to owner permissions where supported;
 - credential-bearing RTSP URLs sanitized in logs;
 - Qt dialogs removed from the video worker thread;
-- YOLO loads lazily and uses the repository model;
+- YOLO/torch object detection removed as out of scope for axis alignment;
 - camera 2 respects a custom RTSP URL;
 - blocking GUI sleep removed;
 - missing `psutil` dependency added.

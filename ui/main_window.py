@@ -17,8 +17,6 @@ from ui.settings_dialog import SettingsDialog
 from ui.device_info_dialog import DeviceInfoDialog  # New import
 from ui.device_info_widget import DeviceInfoWidget  # New import
 from ui.ai_assistant_widget import AIAssistantWidget  # New import
-from ui.yolo_detection_widget import YOLODetectionWidget  # New import
-from core.yolo_tracker import YOLOTracker  # New import
 from core.ai_integration import OllamaAI
 from camera.config_manager import config_manager
 from rangefinder.rangefinder_widget import RangefinderWidget  # Новый импорт
@@ -323,15 +321,7 @@ class MainWindow(QMainWindow):
         self.toggle_ai_assistant_dock_action.setShortcut('Ctrl+A')
         self.toggle_ai_assistant_dock_action.triggered.connect(self.toggle_ai_assistant_dock)
         view_menu.addAction(self.toggle_ai_assistant_dock_action)
-        
-        # Add toggle action for YOLO detection dock
-        self.toggle_yolo_dock_action = QAction('Show &YOLO Detection Panel', self)
-        self.toggle_yolo_dock_action.setCheckable(True)
-        self.toggle_yolo_dock_action.setChecked(False)
-        self.toggle_yolo_dock_action.setShortcut('Ctrl+Y')
-        self.toggle_yolo_dock_action.triggered.connect(self.toggle_yolo_dock)
-        view_menu.addAction(self.toggle_yolo_dock_action)
-        
+
         # Add toggle action for RelayX3 relay control dock
         self.toggle_relayx3_dock_action = QAction('Show &RelayX3 Control Panel', self)
         self.toggle_relayx3_dock_action.setCheckable(True)
@@ -357,13 +347,7 @@ class MainWindow(QMainWindow):
         ai_assistant_action = QAction('AI Assistant', self)
         ai_assistant_action.triggered.connect(self.show_ai_assistant)
         ai_menu.addAction(ai_assistant_action)
-        
-        # YOLO Detection menu
-        yolo_menu = menu_bar.addMenu('&YOLO')
-        yolo_detection_action = QAction('YOLO Detection Settings', self)
-        yolo_detection_action.triggered.connect(self.show_yolo_detection)
-        yolo_menu.addAction(yolo_detection_action)
-        
+
         # Help menu
         help_menu = menu_bar.addMenu('&Help')
         
@@ -390,10 +374,6 @@ class MainWindow(QMainWindow):
         # For now, we'll just toggle the dock widget
         self.toggle_ai_assistant_dock()
 
-    def show_yolo_detection(self):
-        """Show YOLO detection settings"""
-        self.toggle_yolo_dock()
-
     def toggle_device_info_dock(self):
         """Toggle the visibility of the device info dock widget"""
         if hasattr(self, 'device_info_dock') and self.device_info_dock:
@@ -415,17 +395,6 @@ class MainWindow(QMainWindow):
             self.create_ai_assistant_dock()
             self.ai_assistant_dock.setVisible(True)
             self.toggle_ai_assistant_dock_action.setChecked(True)
-
-    def toggle_yolo_dock(self):
-        """Toggle the visibility of the YOLO detection dock widget"""
-        if hasattr(self, 'yolo_dock') and self.yolo_dock:
-            visible = self.yolo_dock.isVisible()
-            self.yolo_dock.setVisible(not visible)
-            self.toggle_yolo_dock_action.setChecked(not visible)
-        else:
-            self.create_yolo_dock()
-            self.yolo_dock.setVisible(True)
-            self.toggle_yolo_dock_action.setChecked(True)
 
     def create_device_info_dock(self):
         """Create the device info dock widget"""
@@ -476,38 +445,6 @@ class MainWindow(QMainWindow):
         # Connect visibility changes to update menu action
         self.ai_assistant_dock.visibilityChanged.connect(self.on_ai_assistant_dock_visibility_changed)
 
-    def create_yolo_dock(self):
-        """Create the YOLO detection dock widget"""
-        if hasattr(self, 'yolo_dock') and self.yolo_dock:
-            return
-
-        # Create dock widget
-        self.yolo_dock = QDockWidget("YOLO Detection & Tracking", self)
-        self.yolo_dock.setObjectName("YOLODetectionDock")
-        
-        # Create the YOLO detection widget
-        self.yolo_widget = YOLODetectionWidget(self)
-        self.yolo_dock.setWidget(self.yolo_widget)
-        
-        # Connect signals to slots
-        self.yolo_widget.detection_enabled_changed.connect(self.on_detection_enabled_changed)
-        self.yolo_widget.confidence_threshold_changed.connect(self.on_confidence_threshold_changed)
-        self.yolo_widget.iou_threshold_changed.connect(self.on_iou_threshold_changed)
-        self.yolo_widget.tracking_enabled_changed.connect(self.on_tracking_enabled_changed)
-        self.yolo_widget.classes_changed.connect(self.on_classes_changed)
-        
-        # Set dock properties
-        self.yolo_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea |
-            Qt.DockWidgetArea.BottomDockWidgetArea | Qt.DockWidgetArea.TopDockWidgetArea
-        )
-        
-        # Add dock to main window
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.yolo_dock)
-        
-        # Connect visibility changes to update menu action
-        self.yolo_dock.visibilityChanged.connect(self.on_yolo_dock_visibility_changed)
-
     def on_device_info_dock_visibility_changed(self, visible):
         """Update the menu action when dock visibility changes"""
         self.toggle_device_info_dock_action.setChecked(visible)
@@ -515,10 +452,6 @@ class MainWindow(QMainWindow):
     def on_ai_assistant_dock_visibility_changed(self, visible):
         """Update the menu action when AI assistant dock visibility changes"""
         self.toggle_ai_assistant_dock_action.setChecked(visible)
-
-    def on_yolo_dock_visibility_changed(self, visible):
-        """Update the menu action when YOLO dock visibility changes"""
-        self.toggle_yolo_dock_action.setChecked(visible)
 
     def toggle_relayx3_dock(self):
         """Toggle the visibility of the RelayX3 control dock widget"""
@@ -559,41 +492,6 @@ class MainWindow(QMainWindow):
     def on_relayx3_dock_visibility_changed(self, visible):
         """Update the menu action when RelayX3 dock visibility changes"""
         self.toggle_relayx3_dock_action.setChecked(visible)
-
-    def on_detection_enabled_changed(self, enabled):
-        """Handle detection enabled state change"""
-        if hasattr(self, 'thread1') and self.thread1:
-            self.thread1.set_detection_enabled(enabled)
-        if hasattr(self, 'thread2') and self.thread2:
-            self.thread2.set_detection_enabled(enabled)
-
-    def on_confidence_threshold_changed(self, threshold):
-        """Handle confidence threshold change"""
-        if hasattr(self, 'thread1') and self.thread1:
-            self.thread1.set_confidence_threshold(threshold)
-        if hasattr(self, 'thread2') and self.thread2:
-            self.thread2.set_confidence_threshold(threshold)
-
-    def on_iou_threshold_changed(self, threshold):
-        """Handle IOU threshold change"""
-        if hasattr(self, 'thread1') and self.thread1:
-            self.thread1.set_iou_threshold(threshold)
-        if hasattr(self, 'thread2') and self.thread2:
-            self.thread2.set_iou_threshold(threshold)
-
-    def on_tracking_enabled_changed(self, enabled):
-        """Handle tracking enabled state change"""
-        if hasattr(self, 'thread1') and self.thread1:
-            self.thread1.set_tracking_enabled(enabled)
-        if hasattr(self, 'thread2') and self.thread2:
-            self.thread2.set_tracking_enabled(enabled)
-
-    def on_classes_changed(self, classes):
-        """Handle class selection change"""
-        if hasattr(self, 'thread1') and self.thread1:
-            self.thread1.set_selected_classes(classes)
-        if hasattr(self, 'thread2') and self.thread2:
-            self.thread2.set_selected_classes(classes)
 
     def apply_settings_hot_swap(self):
         """Apply settings changes without restarting the application"""
@@ -992,13 +890,7 @@ class MainWindow(QMainWindow):
             self.thread2.change_pixmap_signal.connect(self.update_image)
             self.thread1.connection_status_signal.connect(self.update_status_message)
             self.thread2.connection_status_signal.connect(self.update_status_message)
-            
-            # Connect detection stats signals to update YOLO widget
-            if hasattr(self.thread1, 'detection_stats_signal'):
-                self.thread1.detection_stats_signal.connect(lambda det, track: self.update_detection_stats(det, track, 1))
-            if hasattr(self.thread2, 'detection_stats_signal'):
-                self.thread2.detection_stats_signal.connect(lambda det, track: self.update_detection_stats(det, track, 2))
-            
+
             # Start threads
             self.thread1.start()
             self.thread2.start()
@@ -1008,13 +900,7 @@ class MainWindow(QMainWindow):
             error_msg = f"Error initializing video streams: {str(e)}"
             print(error_msg)
             self.status_bar.showMessage(error_msg, 5000)
-    
-    def update_detection_stats(self, detection_count, tracking_count, camera_id):
-        """Update the detection statistics in the YOLO widget"""
-        if hasattr(self, 'yolo_widget') and self.yolo_widget:
-            # For now, just update the stats - in the future, we could differentiate by camera
-            self.yolo_widget.update_stats(detection_count, tracking_count)
-    
+
     def update_image(self, frame, camera_id):
         """Updates the appropriate video widget with a new frame"""
         try:

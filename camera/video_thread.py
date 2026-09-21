@@ -6,12 +6,10 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 # Import config manager to access camera settings
 from camera.config_manager import config_manager
-from core.yolo_tracker import YOLOTracker
 
 class VideoThread(QThread):
     change_pixmap_signal = pyqtSignal(object, int)  # Signal with frame and camera id
     connection_status_signal = pyqtSignal(str)  # Signal for connection status updates
-    detection_stats_signal = pyqtSignal(int, int)  # Signal for detection stats (detected objects, tracked objects)
     error_signal = pyqtSignal(object)
 
     def __init__(self, rtsp_url, camera_id):
@@ -20,16 +18,6 @@ class VideoThread(QThread):
         self.camera_id = camera_id
         self._run_flag = True
         self.cap = None
-        
-        # YOLO detection settings
-        self.detection_enabled = False
-        self.tracking_enabled = False
-        self.confidence_threshold = 0.5
-        self.iou_threshold = 0.4
-        self.selected_classes = []  # Track selected classes
-        
-        # Loaded lazily when detection is enabled; normal video startup stays fast.
-        self.yolo_tracker = None
 
     @staticmethod
     def _safe_stream_label(url):
@@ -314,22 +302,7 @@ class VideoThread(QThread):
                             # Reset failure counter on success
                             frame_read_failure_count = 0
                             last_successful_frame_time = time.time()
-                            
-                            # Process frame if detection is enabled
-                            if self.detection_enabled and self.yolo_tracker:
-                                try:
-                                    # Update class filters if needed
-                                    if self.selected_classes:
-                                        self.yolo_tracker.set_allowed_classes(self.selected_classes)
-                                    
-                                    processed_frame, detections = self.yolo_tracker.process_frame(cv_img)
-                                    detection_count = len(detections)
-                                    tracking_count = len([d for d in detections if d.get('track_id')])
-                                    self.detection_stats_signal.emit(detection_count, tracking_count)
-                                    cv_img = processed_frame
-                                except Exception as e:
-                                    print(f"[ERROR] Error during YOLO processing: {e}")
-                            
+
                             # Emit frame only if it's valid
                             self.change_pixmap_signal.emit(cv_img, self.camera_id)
                         else:
@@ -431,16 +404,7 @@ class VideoThread(QThread):
                 self.cap = None
             except Exception as e:
                 print(f"[ERROR] Error releasing capture in stop(): {str(e)}")
-                
-        # Clean up YOLO tracker
-        if self.yolo_tracker:
-            try:
-                print("[LOG] Cleaning up YOLO tracker resources")
-                self.yolo_tracker.cleanup()
-                self.yolo_tracker = None
-            except Exception as e:
-                print(f"[ERROR] Error cleaning up YOLO tracker: {str(e)}")
-                
+
     def _show_error_message(self, error_details):
         """Display an error message to the user and log details"""
         try:
@@ -463,35 +427,3 @@ class VideoThread(QThread):
             
         # Don't wait synchronously to avoid blocking UI, let the thread finish naturally
         # Just signal it to stop and return immediately
-            
-    def set_detection_enabled(self, enabled):
-        """Enable or disable YOLO detection"""
-        self.detection_enabled = enabled
-        if enabled and self.yolo_tracker is None:
-            try:
-                self.yolo_tracker = YOLOTracker(
-                    conf_threshold=self.confidence_threshold,
-                    iou_threshold=self.iou_threshold,
-                )
-            except Exception as e:
-                print(f"[ERROR] Error initializing YOLO tracker: {e}")
-            
-    def set_confidence_threshold(self, threshold):
-        """Set confidence threshold for YOLO detection"""
-        self.confidence_threshold = threshold
-        if self.yolo_tracker:
-            self.yolo_tracker.set_confidence_threshold(threshold)
-                
-    def set_iou_threshold(self, threshold):
-        """Set IOU threshold for YOLO detection"""
-        self.iou_threshold = threshold
-        if self.yolo_tracker:
-            self.yolo_tracker.set_iou_threshold(threshold)
-                
-    def set_tracking_enabled(self, enabled):
-        """Enable or disable object tracking"""
-        self.tracking_enabled = enabled
-    
-    def set_selected_classes(self, classes):
-        """Set the list of class names or IDs to detect"""
-        self.selected_classes = classes
