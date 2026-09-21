@@ -11,7 +11,6 @@ This document outlines the improvements made to the OnCam project to enhance cod
 ### Benefits:
 - Complete PyInstaller specification for building standalone executables
 - Includes all necessary dependencies and data files
-- Properly bundles YOLO model weights
 - Cross-platform compatible configuration
 
 ### Usage:
@@ -27,7 +26,6 @@ pyinstaller oncam_app.spec
 - `test_techlazer_protocol.py` - Tests for TechLazer PTZ protocol (15 tests)
 - `test_video_thread.py` - Tests for video streaming thread (9 tests)
 - `test_config_manager.py` - Tests for configuration management (10 tests)
-- `test_yolo_tracker.py` - Tests for YOLO object tracking (11 tests)
 - `test_ai_integration.py` - Tests for Ollama AI integration (13 tests)
 
 ### Total Coverage:

@@ -1,8 +1,46 @@
-# OnCam - Camera Monitoring and PTZ Control Application
+# MKIS100TEST
+
+Рабочее место оператора для сведения оптической оси CAM 01 с эталонной тепловизионной осью CAM 02, проверки и управления поворотным устройством TL.0009, дальномером и Relay X3. Активное приложение — [`desktop/`](desktop/README.md) (Tauri 2 + Rust + React).
+
+## Скачать готовое приложение
+
+Страница **Releases** этого репозитория на GitHub → последняя версия:
+
+| Система | Файл |
+|---|---|
+| Windows 10/11 | `MKIS100TEST_<версия>_x64-setup.exe` — установщик; `…_x64-portable.exe` — без установки; `.msi` |
+| macOS | `MKIS100TEST_<версия>_universal.dmg` |
+| Linux | `.AppImage`, `.deb`, `.rpm` |
+
+Сборки не подписаны: при первом запуске Windows SmartScreen («Подробнее → Выполнить в любом случае») и macOS Gatekeeper («Открыть» из контекстного меню) покажут предупреждение. Установщики для каждого коммита также лежат в **Actions** → запуск workflow «MKIS100TEST» → Artifacts.
+
+## Склонировать и собрать
+
+```bash
+git clone https://github.com/atabaevkirill-dev/NewMkis-main.git
+cd NewMkis-main/desktop
+npm ci
+npm run dev:native      # запуск для разработки
+npm run tauri build     # установщики для текущей ОС в src-tauri/target/release/bundle
+```
+
+Требования и подробности — в [desktop/README.md](desktop/README.md).
+
+## Выпуск новой версии
+
+1. Поднять `version` в `desktop/package.json`, `desktop/src-tauri/tauri.conf.json` и `desktop/src-tauri/Cargo.toml`.
+2. `git tag v0.2.0 && git push origin v0.2.0`.
+3. Workflow [.github/workflows/desktop.yml](.github/workflows/desktop.yml) соберёт Windows, macOS и Linux и опубликует релиз.
+
+---
+
+## Старое PyQt-приложение (эталон аппаратной логики)
+
+Сохраняется до проверки всех аппаратных функций в новом клиенте.
 
 OnCam is a Python application that provides camera monitoring and PTZ (Pan-Tilt-Zoom) control system with support for both ONVIF PTZ cameras and Pelco-D protocol pan-tilt units.
 
-## Features
+### Features
 
 - Dual Camera RTSP Streaming - Displays video from two IP cameras side-by-side
 - PTZ Control - Supports both ONVIF PTZ cameras and Pelco-D protocol pan-tilt units
@@ -11,12 +49,12 @@ OnCam is a Python application that provides camera monitoring and PTZ (Pan-Tilt-
 - Configuration Management - Saves settings to a JSON file
 - Standalone Executable - Can be packaged as a standalone executable for distribution
 
-## Requirements
+### Requirements
 
 - Python 3.7 or higher
 - Windows, macOS, or Linux operating system
 
-## Installation
+### Installation
 
 1. Clone or download this repository to your local machine
 2. Navigate to the project directory in your terminal/command prompt
@@ -32,21 +70,21 @@ Alternatively, you can install dependencies manually:
 pip install -r requirements.txt
 ```
 
-## Usage
+### Usage
 
 To run the application:
 
 ```bash
-python run_app.py
+python -m core.run_app
 ```
 
 Or directly:
 
 ```bash
-python main.py
+python -m core.main
 ```
 
-## Creating a Standalone Executable
+### Creating a Standalone Executable
 
 To package the application as a standalone executable for distribution:
 
@@ -64,7 +102,7 @@ After successful build, the executable will be located in the `dist/` folder. Th
 
 For more detailed instructions, see BUILD_INSTRUCTIONS.md
 
-## Configuration
+### Configuration
 
 The application stores settings in JSON format in your user directory under `OnCamLogs/config.json`.
 You can configure:
@@ -73,7 +111,7 @@ You can configure:
 - Display preferences (crosshairs, PTZ panels visibility)
 - Control settings (speed delays, zoom delays)
 
-## Controls
+### Controls
 
 - Arrow Keys: Pan/Tilt
 - Page Up: Zoom In
@@ -86,7 +124,7 @@ You can configure:
 - Ctrl+I: Toggle Invert Tilt
 - F11: Toggle Fullscreen Mode
 
-## Troubleshooting
+### Troubleshooting
 
 If you encounter issues with ONVIF cameras due to missing WSDL files:
 
@@ -94,7 +132,7 @@ If you encounter issues with ONVIF cameras due to missing WSDL files:
 2. The application will attempt to work without WSDL files by using default ONVIF initialization
 3. Check camera credentials and network connectivity
 
-## Project Structure
+### Project Structure
 
 ```
 NewMkis/
@@ -116,6 +154,6 @@ NewMkis/
 └── README.md             # This file
 ```
 
-## License
+### License
 
 This project is created for personal/educational use.

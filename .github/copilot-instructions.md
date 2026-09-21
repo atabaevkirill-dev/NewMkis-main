@@ -1,0 +1,1 @@
+Read `/AGENTS.md` and `/docs/PROJECT_CONTEXT.md` before suggesting or changing code. The active rewrite is `/desktop` (Tauri 2 + Rust + React + TypeScript); legacy Python remains until verified feature parity. Preserve the cockpit UX rules, service-protocol-only TL.0009 movement, keychain credential storage and the stated implementation boundary.

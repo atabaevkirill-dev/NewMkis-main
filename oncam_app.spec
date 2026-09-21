@@ -5,9 +5,7 @@ block_cipher = None
 a = Analysis(
     ['core/main.py'],
     pathex=[],
-    binaries=[
-        ('yolov5su.pt', '.'),
-    ],
+    binaries=[],
     datas=[
         ('translations', 'translations'),
         ('camera', 'camera'),
@@ -28,8 +26,6 @@ a = Analysis(
         'onvif',
         'zeep',
         'serial',
-        'torch',
-        'ultralytics',
         'requests',
         'PIL',
         'pkg_resources.py2_warn',

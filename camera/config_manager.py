@@ -1,6 +1,6 @@
-import os
+import copy
 import json
-from pathlib import Path
+import os
 from PyQt6.QtCore import QDate
 
 # Configuration management
@@ -10,10 +10,10 @@ class ConfigManager:
         self.default_config = {
             "cameras": {
                 "camera1": {
-                    "ip": "192.168.1.68",
+                    "ip": "",
                     "port": 80,
-                    "username": "admin",
-                    "password": "12qwaszx",
+                    "username": "",
+                    "password": "",
                     "rtsp_port": 554,
                     "stream_path": "/stream1",
                     "custom_rtsp_url": "",
@@ -23,10 +23,10 @@ class ConfigManager:
                     "resolution_height": 480
                 },
                 "camera2": {
-                    "ip": "192.168.1.108",
+                    "ip": "",
                     "port": 80,
-                    "username": "admin",
-                    "password": "12qwaszx",
+                    "username": "",
+                    "password": "",
                     "rtsp_port": 554,
                     "stream_path": "/stream1",
                     "custom_rtsp_url": "",
@@ -36,7 +36,7 @@ class ConfigManager:
                     "resolution_height": 768  # According to thermal camera specs
                 },
                 "pan_tilt": {
-                    "ip": "192.168.1.115",
+                    "ip": "",
                     "port": 9761
                 }
             },
@@ -59,7 +59,7 @@ class ConfigManager:
                 "password": ""
             },
             "relayx3": {
-                "tcp_ip": "192.168.1.115",
+                "tcp_ip": "",
                 "tcp_port": 9761,
                 "device_address": 1,
                 "baud_rate": 115200,
@@ -81,7 +81,7 @@ class ConfigManager:
                 with open(self.config_path, 'r') as f:
                     config = json.load(f)
                     # Merge with default config to ensure all keys exist
-                    merged_config = self.default_config.copy()
+                    merged_config = copy.deepcopy(self.default_config)
                     for key, value in config.items():
                         if isinstance(value, dict) and key in merged_config:
                             merged_config[key].update(value)
@@ -89,8 +89,9 @@ class ConfigManager:
                             merged_config[key] = value
                     return merged_config
             else:
-                self.save_config(self.default_config)
-                return self.default_config
+                config = copy.deepcopy(self.default_config)
+                self.save_config(config)
+                return config
         except Exception as e:
             print(f"Error loading config: {e}")
             return self.default_config
@@ -100,10 +101,16 @@ class ConfigManager:
             config_to_save = config or self.config
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
-            with open(self.config_path, 'w') as f:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(config_to_save, f, indent=4)
+            try:
+                os.chmod(self.config_path, 0o600)
+            except OSError:
+                pass
+            return True
         except Exception as e:
             print(f"Error saving config: {e}")
+            return False
     
     def get_camera_config(self, camera_key):
         return self.config["cameras"].get(camera_key, {})

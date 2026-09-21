@@ -3,16 +3,14 @@ import time
 import numpy as np
 import traceback
 from PyQt6.QtCore import QThread, pyqtSignal
-from PyQt6.QtWidgets import QMessageBox
 
 # Import config manager to access camera settings
 from camera.config_manager import config_manager
-from core.yolo_tracker import YOLOTracker
 
 class VideoThread(QThread):
     change_pixmap_signal = pyqtSignal(object, int)  # Signal with frame and camera id
     connection_status_signal = pyqtSignal(str)  # Signal for connection status updates
-    detection_stats_signal = pyqtSignal(int, int)  # Signal for detection stats (detected objects, tracked objects)
+    error_signal = pyqtSignal(object)
 
     def __init__(self, rtsp_url, camera_id):
         super().__init__()
@@ -20,20 +18,19 @@ class VideoThread(QThread):
         self.camera_id = camera_id
         self._run_flag = True
         self.cap = None
-        
-        # YOLO detection settings
-        self.detection_enabled = False
-        self.tracking_enabled = False
-        self.confidence_threshold = 0.5
-        self.iou_threshold = 0.4
-        self.selected_classes = []  # Track selected classes
-        
-        # Initialize YOLO tracker
+
+    @staticmethod
+    def _safe_stream_label(url):
+        """Return a log-safe stream address without embedded credentials."""
+        from urllib.parse import urlsplit, urlunsplit
         try:
-            self.yolo_tracker = YOLOTracker(conf_threshold=self.confidence_threshold, iou_threshold=self.iou_threshold)
-        except Exception as e:
-            print(f"[ERROR] Error initializing YOLO tracker: {e}")
-            self.yolo_tracker = None
+            parsed = urlsplit(url)
+            host = parsed.hostname or ""
+            if parsed.port:
+                host = f"{host}:{parsed.port}"
+            return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+        except Exception:
+            return "<invalid stream URL>"
 
     def run(self):
         # Check if we have a valid URL to connect to
@@ -46,7 +43,7 @@ class VideoThread(QThread):
                 time.sleep(0.1)
             return
         
-        print(f"[LOG] Starting VideoThread for Camera {self.camera_id} with URL: {self.rtsp_url}")
+        print(f"[LOG] Starting VideoThread for Camera {self.camera_id} with URL: {self._safe_stream_label(self.rtsp_url)}")
         self.connection_status_signal.emit(f"Initializing connection for Camera {self.camera_id}...")
         
         # Get camera configuration from config manager
@@ -305,22 +302,7 @@ class VideoThread(QThread):
                             # Reset failure counter on success
                             frame_read_failure_count = 0
                             last_successful_frame_time = time.time()
-                            
-                            # Process frame if detection is enabled
-                            if self.detection_enabled and self.yolo_tracker:
-                                try:
-                                    # Update class filters if needed
-                                    if self.selected_classes:
-                                        self.yolo_tracker.set_allowed_classes(self.selected_classes)
-                                    
-                                    processed_frame, detections = self.yolo_tracker.process_frame(cv_img)
-                                    detection_count = len(detections)
-                                    tracking_count = len([d for d in detections if d.get('track_id')])
-                                    self.detection_stats_signal.emit(detection_count, tracking_count)
-                                    cv_img = processed_frame
-                                except Exception as e:
-                                    print(f"[ERROR] Error during YOLO processing: {e}")
-                            
+
                             # Emit frame only if it's valid
                             self.change_pixmap_signal.emit(cv_img, self.camera_id)
                         else:
@@ -422,16 +404,7 @@ class VideoThread(QThread):
                 self.cap = None
             except Exception as e:
                 print(f"[ERROR] Error releasing capture in stop(): {str(e)}")
-                
-        # Clean up YOLO tracker
-        if self.yolo_tracker:
-            try:
-                print("[LOG] Cleaning up YOLO tracker resources")
-                self.yolo_tracker.cleanup()
-                self.yolo_tracker = None
-            except Exception as e:
-                print(f"[ERROR] Error cleaning up YOLO tracker: {str(e)}")
-                
+
     def _show_error_message(self, error_details):
         """Display an error message to the user and log details"""
         try:
@@ -444,12 +417,9 @@ class VideoThread(QThread):
             
             # Only show message box if we're not shutting down
             if self._run_flag:
-                msg_box = QMessageBox()
-                msg_box.setWindowTitle(error_title)
-                msg_box.setText(base_message)
-                msg_box.setDetailedText(f"RTSP URL: {error_details['rtsp_url']}\nAttempt: {error_details['attempt']}\nTimestamp: {error_details['timestamp']}")
-                msg_box.setIcon(QMessageBox.Icon.Warning)
-                msg_box.exec()
+                # The main window owns all dialogs. Creating widgets in a QThread
+                # is undefined behaviour in Qt, so only emit structured data here.
+                self.connection_status_signal.emit(f"{error_title}: {base_message}")
         except Exception as e:
             print(f"[ERROR] Failed to display error message: {str(e)}")
             # As a last resort, just print the error details
@@ -457,27 +427,3 @@ class VideoThread(QThread):
             
         # Don't wait synchronously to avoid blocking UI, let the thread finish naturally
         # Just signal it to stop and return immediately
-            
-    def set_detection_enabled(self, enabled):
-        """Enable or disable YOLO detection"""
-        self.detection_enabled = enabled
-            
-    def set_confidence_threshold(self, threshold):
-        """Set confidence threshold for YOLO detection"""
-        self.confidence_threshold = threshold
-        if self.yolo_tracker:
-            self.yolo_tracker.set_confidence_threshold(threshold)
-                
-    def set_iou_threshold(self, threshold):
-        """Set IOU threshold for YOLO detection"""
-        self.iou_threshold = threshold
-        if self.yolo_tracker:
-            self.yolo_tracker.set_iou_threshold(threshold)
-                
-    def set_tracking_enabled(self, enabled):
-        """Enable or disable object tracking"""
-        self.tracking_enabled = enabled
-    
-    def set_selected_classes(self, classes):
-        """Set the list of class names or IDs to detect"""
-        self.selected_classes = classes
