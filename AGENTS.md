@@ -4,15 +4,22 @@ Read this file before changing the project. Detailed product context is in `docs
 
 ## Product goal
 
-ONCAM is an operator workstation for aligning the optical axis of CAM 01 with the thermal reference axis of CAM 02. It also tests and controls the TL.0009 pan/tilt platform, cameras, rangefinder and Relay X3, and will record both video channels with device metadata.
+The application's display name is **MKIS100TEST** (the project was historically called ONCAM). Internal identifiers keep `oncam` / `ru.oncam.cockpit` on purpose: changing them would orphan saved config (app config dir) and keychain entries.
+
+ONCAM/MKIS100TEST is an operator workstation for aligning the optical axis of CAM 01 with the thermal reference axis of CAM 02. It also tests and controls the TL.0009 pan/tilt platform, cameras, rangefinder and Relay X3, and will record both video channels with device metadata.
 
 ## Repository layout
 
 - `desktop/`: active rewrite, Tauri 2 + Rust + React + TypeScript.
 - `camera/`, `ptz/`, `rangefinder/`, `relayx3/`, `ui/`, `core/`: legacy PyQt/Python implementation and hardware reference code.
-- `desktop/src-tauri/src/lib.rs`: native config, keychain, discovery, TL.0009 service TCP commands and rocking profiles.
-- `desktop/src/App.tsx`: current cockpit UI and interactions.
+- `desktop/src-tauri/src/lib.rs`: native config (atomic write, corruption recovery), keychain, device probing, persistent TL.0009 service link with jog watchdog, rocking profiles; unit tests with a mock TL.0009.
+- `desktop/src/App.tsx`: cockpit shell — top bar, video stage, status bar.
+- `desktop/src/CameraDrawer.tsx`, `desktop/src/SystemDrawer.tsx`: camera drawers (network, lens, reticles) and the top drawer (device modules, TL.0009, tests, recording).
+- `desktop/src/config.ts`: config defaults, schema migration and device-module helpers.
+- `desktop/src/useJog.ts`: hold-to-move (dead-man) jog; `desktop/src/Reticle.tsx`: reticle rendering.
+- `desktop/src/report.ts`, `desktop/src/PrintReport.tsx`: operability protocol (A4, printed to PDF) built only from executed checks.
 - `desktop/src/api.ts`: typed boundary between UI and Tauri commands.
+- `.github/workflows/desktop.yml`: CI checks and installers for Windows/macOS/Linux; tags `v*` publish a GitHub Release.
 - `desktop/docs/TL0009_SERVICE.md`: service-command subset used by the new client.
 
 Do not delete the Python implementation until its hardware behavior has been reproduced and verified in Tauri.
@@ -45,6 +52,8 @@ TL.0009 movement in the new client must use only the ASCII service protocol (`$.
 
 PAN commands are lower-case (`m n o p q u w x`); TILT commands are upper-case (`M N O P Q U W X`). Validate speeds and angles before sending commands. Stop both axes when a rocking profile is cancelled or fails.
 
+Motion safety in the new client: any STOP (button, Esc, D-pad release) cancels a running profile; jog moves only while the button is held and the native watchdog stops both axes if the UI stops confirming it; all traffic to TL.0009 goes through one serialised link. Profiles use signed angles (PAN ±180°, TILT −45…90°) that are sent as 0.00…359.99° — verify direction and limits on the real platform.
+
 ## Security rules
 
 - Never hardcode or commit real passwords.
@@ -53,12 +62,13 @@ PAN commands are lower-case (`m n o p q u w x`); TILT commands are upper-case (`
 - Do not print credential-bearing RTSP URLs.
 - Recording metadata may contain IP/protocol/telemetry. Credentials require explicit opt-in and an encrypted manifest; never plaintext.
 - Keep `.env`, local config, `node_modules`, `dist`, Cargo `target` and generated schemas out of Git.
+- The operability protocol must reflect real results only: never pre-fill, default or simulate a passing check. Unrun checks are «не выполнена», browser-mode protocols carry the «недействителен» warning.
 
 ## Current implementation boundary
 
-Implemented: cockpit layout, push drawers, resizing/swapping panes, configuration UI, keychain commands, configured-device TCP discovery, TL.0009 service jog/stop/self-test, five rocking profiles, test/recording UI, hover D-pad and mouse lens gestures.
+Implemented: compact cockpit layout, push drawers, resizing/swapping panes, configuration UI with schema migration, OS keychain (native backends), device modules in the summary (add, edit address, hide, remove) with live TCP link status, up to three configurable reticles per camera, TL.0009 service jog (dead-man + watchdog)/stop/self-test, five rocking profiles with progress events, TCP reachability tests, recording settings UI, hover D-pad and mouse lens gestures.
 
-Not yet implemented end-to-end: RTSP decode/render, full ONVIF zoom/focus adapter, FFmpeg recording, live telemetry polling, automatic axis-error computer vision, complete device test adapters. UI placeholders are not evidence that hardware integration is complete. State this accurately in handoffs.
+Not yet implemented end-to-end: RTSP decode/render, full ONVIF zoom/focus adapter, FFmpeg recording, live telemetry polling, automatic axis-error computer vision, protocol-level device test adapters. The UI shows `—` or «не подключено» for these instead of sample values; keep it that way. UI placeholders are not evidence that hardware integration is complete. State this accurately in handoffs.
 
 ## Development workflow
 
@@ -77,6 +87,7 @@ Before committing:
 ```bash
 cd desktop
 npm run check
+cargo test --manifest-path src-tauri/Cargo.toml
 cd ..
 git diff --check
 git status --short

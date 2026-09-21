@@ -1,92 +1,33 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { AppConfig, DeviceSummary, RockingProfile } from "./types";
+import { createDefaultConfig, migrateConfig } from "./config";
+import type { AppConfig, ProbeResult, ProbeTarget, RockingEvent, RockingProfile } from "./types";
 
-export const defaultConfig: AppConfig = {
-  schemaVersion: 2,
-  cameras: [
-    {
-      id: "camera1",
-      name: "CAM 01 · OPTICAL",
-      ip: "192.168.1.68",
-      onvifPort: 80,
-      rtspPort: 554,
-      username: "admin",
-      profile: "PROFILE_1",
-      autoConnect: true,
-      osd: false,
-    },
-    {
-      id: "camera2",
-      name: "CAM 02 · THERMAL",
-      ip: "192.168.1.108",
-      onvifPort: 80,
-      rtspPort: 554,
-      username: "admin",
-      profile: "THERMAL_1",
-      autoConnect: true,
-      osd: false,
-    },
-  ],
-  platformIp: "192.168.1.115",
-  platformPort: 9762,
-  rangefinderIp: "192.168.1.7",
-  rangefinderPort: 20108,
-  relayIp: "192.168.127.254",
-  relayPort: 9762,
-  profiles: Array.from({ length: 5 }, (_, index) => ({
-    id: index + 1,
-    name: `Профиль ${index + 1}`,
-    panMin: -45,
-    panMax: 45,
-    tiltMin: -15,
-    tiltMax: 20,
-    panSpeed: 20,
-    tiltSpeed: 8,
-    cycles: 10,
-    pauseSeconds: 1,
-    smoothMotion: true,
-  })),
-  recording: {
-    camera1: true,
-    camera2: true,
-    directory: "",
-    format: "mkv",
-    segmentMinutes: 30,
-    includeMetadata: true,
-    includeEncryptedSecrets: false,
-  },
-  alignment: {
-    enabled: false,
-    tolerancePx: 3,
-    stableMs: 1200,
-  },
-};
+export type JogDirection = "left" | "right" | "up" | "down";
 
-const inTauri = () => "__TAURI_INTERNALS__" in window;
+export const inTauri = () => "__TAURI_INTERNALS__" in window;
+const BROWSER_MODE = "браузерный режим: оборудование не опрашивается";
 
-function migrateConfig(stored: Partial<AppConfig> | null): AppConfig {
-  if (!stored) return defaultConfig;
-  const migrated = { ...defaultConfig, ...stored } as AppConfig;
-  if ((stored.schemaVersion ?? 0) < 2) {
-    migrated.platformPort = 9762;
-    migrated.schemaVersion = 2;
-  }
-  return migrated;
+let lastSeq = 0;
+/** Monotonic across reloads, so the native side can order a stop against in-flight motion requests. */
+function nextSeq(): number {
+  const now = Math.floor((performance.timeOrigin + performance.now()) * 1000);
+  lastSeq = Math.max(lastSeq + 1, now);
+  return lastSeq;
 }
 
-export async function loadConfig(): Promise<AppConfig> {
+export async function loadConfig(): Promise<{ config: AppConfig; recoveredFrom: string | null }> {
   if (!inTauri()) {
-    const stored = localStorage.getItem("oncam-config");
-    if (!stored) return defaultConfig;
     try {
-      return migrateConfig(JSON.parse(stored) as Partial<AppConfig>);
+      const stored = localStorage.getItem("oncam-config");
+      return { config: migrateConfig(stored ? JSON.parse(stored) : null), recoveredFrom: null };
     } catch {
-      return defaultConfig;
+      return { config: createDefaultConfig(), recoveredFrom: null };
     }
   }
-  const stored = await invoke<AppConfig | null>("get_config");
-  return migrateConfig(stored);
+  const loaded = await invoke<{ config: unknown; recoveredFrom: string | null }>("get_config");
+  return { config: migrateConfig(loaded.config), recoveredFrom: loaded.recoveredFrom };
 }
 
 export async function persistConfig(config: AppConfig): Promise<void> {
@@ -97,28 +38,29 @@ export async function persistConfig(config: AppConfig): Promise<void> {
   await invoke("save_config", { config });
 }
 
-export async function discoverDevices(): Promise<DeviceSummary[]> {
-  if (!inTauri()) {
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    return [
-      { id: "camera1", name: "CAM 01", kind: "camera", ip: "192.168.1.68", port: 80, protocol: "ONVIF / RTSP", connected: true },
-      { id: "camera2", name: "CAM 02", kind: "camera", ip: "192.168.1.108", port: 80, protocol: "ONVIF / RTSP", connected: true },
-      { id: "platform", name: "TL.0009", kind: "platform", ip: "192.168.1.115", port: 9762, protocol: "SERVICE TCP", connected: true },
-      { id: "rangefinder", name: "Rangefinder", kind: "rangefinder", ip: "192.168.1.7", port: 20108, protocol: "TCP", connected: true },
-      { id: "relay", name: "Relay X3", kind: "relay", ip: "192.168.127.254", port: 9762, protocol: "PELCO-D", connected: true },
-    ];
-  }
-  return invoke<DeviceSummary[]>("discover_devices");
+export async function probeModules(targets: ProbeTarget[]): Promise<ProbeResult[]> {
+  if (!inTauri()) return targets.map(({ id }) => ({ id, connected: false, latencyMs: null, error: BROWSER_MODE }));
+  return invoke<ProbeResult[]>("probe_devices", { targets });
+}
+
+// Browser preview keeps passwords in memory only: never in localStorage or sessionStorage.
+const browserSecrets = new Map<string, string>();
+
+export async function hasSecret(deviceId: string): Promise<boolean> {
+  if (!inTauri()) return browserSecrets.has(deviceId);
+  return invoke<boolean>("has_secret", { deviceId });
 }
 
 export async function getSecret(deviceId: string): Promise<string> {
-  if (!inTauri()) return sessionStorage.getItem(`oncam-secret:${deviceId}`) ?? "";
+  if (!inTauri()) return browserSecrets.get(deviceId) ?? "";
   return invoke<string>("get_secret", { deviceId });
 }
 
+/** An empty password removes the stored one. */
 export async function setSecret(deviceId: string, password: string): Promise<void> {
   if (!inTauri()) {
-    sessionStorage.setItem(`oncam-secret:${deviceId}`, password);
+    if (password) browserSecrets.set(deviceId, password);
+    else browserSecrets.delete(deviceId);
     return;
   }
   await invoke("set_secret", { deviceId, password });
@@ -130,32 +72,50 @@ export async function chooseRecordingDirectory(): Promise<string | null> {
   return typeof selected === "string" ? selected : null;
 }
 
-export async function platformJog(ip: string, port: number, direction: "left" | "right" | "up" | "down", speed: number): Promise<string> {
-  if (!inTauri()) return `DEMO: ${direction} ${speed}`;
-  return invoke<string>("platform_jog", { ip, port, direction, speed });
+export async function platformJog(ip: string, port: number, direction: JogDirection, speed: number): Promise<string> {
+  if (!inTauri()) return `ДЕМО · ${BROWSER_MODE}`;
+  return invoke<string>("platform_jog", { ip, port, direction, speed, seq: nextSeq() });
 }
 
+/** Confirms that the jog button is still held; without it the native watchdog stops the axes. */
+export async function platformKeepalive(): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("platform_jog_keepalive");
+}
+
+/** Stops both axes and cancels any running profile or held jog. */
 export async function platformStop(ip: string, port: number): Promise<void> {
   if (!inTauri()) return;
-  await invoke("platform_stop", { ip, port });
+  await invoke("platform_stop", { ip, port, seq: nextSeq() });
+}
+
+export async function runPlatformSelfTest(ip: string, port: number): Promise<string[]> {
+  if (!inTauri()) return [`ДЕМО · ${BROWSER_MODE}`];
+  return invoke<string[]>("platform_self_test", { ip, port, seq: nextSeq() });
 }
 
 export async function startRockingProfile(ip: string, port: number, profile: RockingProfile): Promise<void> {
-  if (!inTauri()) return;
-  await invoke("start_rocking", { ip, port, profile });
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  await invoke("start_rocking", { ip, port, profile, seq: nextSeq() });
 }
 
 export async function stopRockingProfile(ip: string, port: number): Promise<void> {
   if (!inTauri()) return;
-  await invoke("stop_rocking", { ip, port });
+  await invoke("stop_rocking", { ip, port, seq: nextSeq() });
 }
 
-export async function runPlatformSelfTest(ip: string, port: number): Promise<string[]> {
-  if (!inTauri()) return ["$m,1# → DEMO", "$M,1# → DEMO"];
-  return invoke<string[]>("platform_self_test", { ip, port });
+/** Opens the system print dialog (the report page is laid out for A4; choose «Save as PDF»). */
+export async function printPage(): Promise<void> {
+  if (inTauri() && (await invoke<boolean>("print_page"))) return;
+  window.print();
 }
 
 export async function cameraLensStep(cameraId: string, mode: "zoom" | "focus", direction: number): Promise<void> {
-  if (!inTauri()) return;
+  if (!inTauri()) throw new Error(BROWSER_MODE);
   await invoke("camera_lens_step", { cameraId, mode, direction });
+}
+
+export async function onRockingState(handler: (event: RockingEvent) => void): Promise<UnlistenFn> {
+  if (!inTauri()) return () => undefined;
+  return listen<RockingEvent>("rocking-state", (event) => handler(event.payload));
 }
