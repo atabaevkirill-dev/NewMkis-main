@@ -87,6 +87,7 @@ input[type="color"] { width: 24px; height: 20px; padding: 1px; border-radius: 3p
 .muted { color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .spacer { flex: 1; }
 .hint { margin: 0; color: #68727e; font: 500 9px var(--mono); }
+.hint.error { color: var(--danger-text); overflow-wrap: anywhere; }
 .form-error { margin: 0; color: var(--danger-text); font-size: 10px; }
 
 .chip { height: 24px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-2); color: #b7bec8; font-size: 10px; white-space: nowrap; }
@@ -149,10 +150,15 @@ input[type="color"] { width: 24px; height: 20px; padding: 1px; border-radius: 3p
 .record-sources button.selected.blue { color: #91c6ff; border-color: rgba(77, 163, 255, .5); background: var(--blue-soft); }
 .record-sources button.selected.amber { color: #f5c27c; border-color: rgba(240, 166, 74, .5); background: var(--amber-soft); }
 .record-settings { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; align-content: start; }
-.record-meta { display: flex; flex-direction: column; gap: 2px; padding: 4px 9px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--surface-2); }
+.record-meta { display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow: hidden; padding: 4px 9px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--surface-2); }
 .record-start { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); color: #c8cfd7; font-size: 11px; }
 .record-start svg { width: 18px; }
 .record-start small { color: var(--muted); font-size: 9px; }
+.record-start.active { border-color: var(--danger); color: var(--danger-text); background: var(--danger-soft); }
+.top-actions .recording { color: var(--danger-text); border-color: rgba(255, 92, 101, .45); }
+.countdown { margin-left: 6px; font: 600 10px var(--mono); font-variant-numeric: tabular-nums; }
+.top-actions .recording svg { animation: rec-blink 1.2s steps(2, start) infinite; }
+@keyframes rec-blink { to { visibility: hidden; } }
 
 /* ---------- shared form controls ---------- */
 .field, .number-field { min-width: 0; display: flex; flex-direction: column; gap: 3px; color: #7c8591; font: 500 9px var(--mono); letter-spacing: .04em; }
@@ -192,6 +198,8 @@ input[type="color"] { width: 24px; height: 20px; padding: 1px; border-radius: 3p
 .video-stage { position: relative; flex: 1; min-width: 0; display: grid; grid-template-columns: var(--split, 50%) minmax(0, 1fr); background: #030405; overflow: hidden; }
 .video-pane { position: relative; min-width: 0; overflow: hidden; isolation: isolate; background: #0a0d10; user-select: none; }
 .video-placeholder { position: absolute; inset: 0; }
+.video-canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.target-marker { position: absolute; z-index: 2; width: 18px; height: 18px; margin: -9px 0 0 -9px; border: 1.5px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0, 0, 0, .7); pointer-events: none; }
 .video-pane.optical .video-placeholder { background: radial-gradient(circle at 52% 44%, rgba(57, 70, 80, .35), transparent 8%), radial-gradient(ellipse at 50% 85%, #252b2f 0 8%, transparent 28%), linear-gradient(165deg, #171d20 0%, #07090b 57%, #15191c 100%); }
 .video-pane.thermal .video-placeholder { background: radial-gradient(circle at 53% 47%, rgba(233, 237, 239, .28), transparent 7%), radial-gradient(ellipse at 53% 78%, #7e8589 0 4%, #34393c 16%, transparent 26%), linear-gradient(155deg, #232729, #080a0b 54%, #363b3d); filter: grayscale(1); }
 .reticle-layer { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
@@ -205,6 +213,8 @@ input[type="color"] { width: 24px; height: 20px; padding: 1px; border-radius: 3p
 .stream-state { position: absolute; bottom: 10px; left: 50%; z-index: 3; translate: -50% 0; display: flex; align-items: center; gap: 7px; padding: 3px 8px; border-radius: 4px; background: rgba(4, 6, 8, .55); color: #9aa3ad; font: 500 10px var(--mono); white-space: nowrap; pointer-events: none; }
 .stream-state svg { width: 12px; }
 .stream-state code { color: #69727d; font: inherit; }
+.stream-state.error { color: var(--danger-text); max-width: calc(100% - 20px); }
+.stream-state.error span { overflow: hidden; text-overflow: ellipsis; }
 
 .split { position: absolute; top: 0; bottom: 0; left: var(--split, 50%); z-index: 8; width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
 .split::before { content: ""; position: absolute; top: 0; bottom: 0; left: -.5px; width: 1px; background: #262c35; }
@@ -273,7 +283,12 @@ input[type="color"] { width: 24px; height: 20px; padding: 1px; border-radius: 3p
 .metric { height: 100%; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-right: 1px solid var(--line-soft); }
 .metric:last-child { border-right: 0; }
 .metric span { font-size: 9px; }
-.metric strong { color: #d7dce3; font-weight: 500; }
+.metric strong { color: #d7dce3; font-weight: 500; min-width: 3ch; }
+/* Fixed widths and tabular digits: changing values must not shift the rest of the bar. */
+.status-bar, .camera-osd { font-variant-numeric: tabular-nums; }
+.cam-status .fps { min-width: 6ch; text-align: right; }
+.cam-status .resolution { min-width: 9ch; }
+.metric.delta strong { min-width: 14ch; }
 .module-chips { gap: 10px !important; min-width: 0; overflow: hidden; }
 .module-chips:empty { display: none; }
 .chip-status { display: inline-flex; align-items: center; gap: 5px; color: #7d8691; }
@@ -287,7 +302,9 @@ input[type="color"] { width: 24px; height: 20px; padding: 1px; border-radius: 3p
 .notice.error { color: var(--danger-text); }
 .align-state { gap: 6px; color: #6f7884; border-right: 0 !important; }
 .align-state svg { width: 13px; }
-.align-state.on { color: #fff; background: rgba(255, 255, 255, .05); }
+.align-state.on { color: #b9c0c9; background: rgba(255, 255, 255, .05); }
+/* Success is white, never green (UX rule 13). */
+.align-state.aligned { color: #0a0d10; background: #fff; font-weight: 700; }
 
 .fatal { height: 100%; display: grid; place-content: center; gap: 10px; text-align: center; color: var(--text); }
 .fatal code { color: var(--danger-text); font: 500 11px var(--mono); }

@@ -7,9 +7,12 @@ import type {
   ReticleConfig,
   ReticleStyle,
   RockingProfile,
+  VideoStats,
 } from "./types";
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
+
+export const OFF_STATS: VideoStats = { state: "off", fps: null, width: null, height: null, message: "", dropped: 0 };
 export const MAX_CUSTOM_MODULES = 24;
 export const MAX_NAME_LENGTH = 32;
 export const MAX_TITLE_LENGTH = 160;
@@ -62,7 +65,7 @@ export const KIND_LABELS: Record<DeviceKind, string> = { camera: "Камера",
 
 export const MODULE_PRESETS: Record<DeviceKind, { label: string; protocol: string; port: number }> = {
   camera: { label: "Камера ONVIF", protocol: "ONVIF / RTSP", port: 80 },
-  platform: { label: "Поворотное устройство", protocol: "SERVICE $…#", port: 9762 },
+  platform: { label: "Поворотное устройство", protocol: "SERVICE $…#", port: 9760 },
   rangefinder: { label: "Дальномер", protocol: "TCP", port: 20108 },
   relay: { label: "Реле", protocol: "TCP", port: 9762 },
   tcp: { label: "TCP-устройство", protocol: "TCP", port: 502 },
@@ -72,6 +75,8 @@ export const clamp = (value: number, [min, max]: Range) => Math.min(max, Math.ma
 export const isIPv4 = (value: string) =>
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(value.trim());
 export const isPort = (value: number) => Number.isInteger(value) && value >= 1 && value <= 65535;
+/** Mirrors the native check: absolute, printable ASCII, no credentials or fragment. */
+export const isStreamPath = (value: string) => value.length <= 256 && /^\/[\x21-\x7e]*$/.test(value) && !/[@\\#]/.test(value);
 
 export function defaultReticles(): ReticleConfig[] {
   return [
@@ -82,15 +87,19 @@ export function defaultReticles(): ReticleConfig[] {
 }
 
 export function createDefaultConfig(): AppConfig {
-  const camera = (id: CameraConfig["id"], name: string, ip: string, profile: string): CameraConfig => ({
-    id, name, ip, onvifPort: 80, rtspPort: 554, username: "admin", profile, autoConnect: true, osd: false, reticles: defaultReticles(),
+  const camera = (id: CameraConfig["id"], name: string, ip: string, streamPath: string, profile: string): CameraConfig => ({
+    id, name, ip, onvifPort: 80, rtspPort: 554, streamPath, username: "admin", profile, autoConnect: true, osd: false, reticles: defaultReticles(),
   });
   return {
     schemaVersion: SCHEMA_VERSION,
     productTitle: "",
-    cameras: [camera("camera1", "CAM 01 · OPTICAL", "192.168.1.68", "PROFILE_1"), camera("camera2", "CAM 02 · THERMAL", "192.168.1.108", "THERMAL_1")],
+    // CAM 01 is a Uniview UV-ZNH2130M (main stream /media/video1); CAM 02 (thermal) uses the Dahua-style path.
+    cameras: [
+      camera("camera1", "CAM 01 · OPTICAL", "192.168.1.68", "/media/video1", "PROFILE_1"),
+      camera("camera2", "CAM 02 · THERMAL", "192.168.1.108", "/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif", "THERMAL_1"),
+    ],
     platformIp: "192.168.1.115",
-    platformPort: 9762,
+    platformPort: 9760,
     rangefinderIp: "192.168.1.7",
     rangefinderPort: 20108,
     relayIp: "192.168.127.254",
@@ -99,7 +108,7 @@ export function createDefaultConfig(): AppConfig {
     hiddenModules: [],
     moduleNames: {},
     reticlesLinked: false,
-    jog: { panSpeed: 10, tiltSpeed: 5 },
+    jog: { panSpeed: 10, tiltSpeed: 5, invertPan: false, invertTilt: false },
     profiles: Array.from({ length: 5 }, (_, index) => ({
       id: index + 1,
       name: `Профиль ${index + 1}`,
@@ -113,7 +122,7 @@ export function createDefaultConfig(): AppConfig {
       pauseSeconds: 1,
       smoothMotion: true,
     })),
-    recording: { camera1: true, camera2: true, directory: "", format: "mkv", segmentMinutes: 30, includeMetadata: true, includeEncryptedSecrets: false },
+    recording: { camera1: true, camera2: true, directory: "", format: "mp4", layout: "separate", splitReticles: true, stopAfterMinutes: 0, segmentMinutes: 30, includeMetadata: true, includeEncryptedSecrets: false },
     report: { serialNumber: "", operator: "" },
     alignment: { enabled: false, tolerancePx: 3, stableMs: 1200 },
   };
@@ -209,7 +218,14 @@ export function migrateConfig(stored: unknown): AppConfig {
   config.hiddenModules = Array.isArray(stored.hiddenModules)
     ? [...new Set(stored.hiddenModules.filter((id): id is string => typeof id === "string"))]
     : [];
-  if (typeof stored.schemaVersion !== "number" || stored.schemaVersion < 2) config.platformPort = 9762;
+  // Schema 4: TL.0009 answers the service protocol only on 9760 (verified on the device; 9761/9762 stay silent).
+  const storedSchema = typeof stored.schemaVersion === "number" ? stored.schemaVersion : 0;
+  if (storedSchema < 2 || (storedSchema < 4 && config.platformPort === 9762)) config.platformPort = 9760;
+  // Only fragmented MP4 is implemented; an older «mkv» choice would otherwise look honoured.
+  config.recording.format = "mp4";
+  if (!["separate", "split", "both"].includes(config.recording.layout)) config.recording.layout = "separate";
+  config.recording.stopAfterMinutes = Math.round(clamp(config.recording.stopAfterMinutes, [0, 1440]));
+  config.recording.includeEncryptedSecrets = false;
   config.schemaVersion = SCHEMA_VERSION;
   return config;
 }

@@ -10,8 +10,9 @@ ONCAM/MKIS100TEST is an operator workstation for aligning the optical axis of CA
 
 ## Repository layout
 
-- `desktop/`: active rewrite, Tauri 2 + Rust + React + TypeScript.
-- `camera/`, `ptz/`, `rangefinder/`, `relayx3/`, `ui/`, `core/`: legacy PyQt/Python implementation and hardware reference code.
+- `desktop/`: the application, Tauri 2 + Rust + React + TypeScript. The former Python/PyQt client was removed in v0.2.0 (see tag `v0.1.0` in git history).
+- `desktop/src-tauri/src/video.rs` (RTSP), `onvif.rs` (zoom/focus), `record.rs` + `split.rs` + `mp4fix.rs` (recording), `desktop/src/VideoSurface.tsx`, `alignment.ts`, `splitRecorder.ts`.
+- `desktop/docs/`: TL.0009 service subset and factory protocol, rangefinder and Relay X3 protocols (the latter two are reference material not yet implemented beyond TCP reachability).
 - `desktop/src-tauri/src/lib.rs`: native config (atomic write, corruption recovery), keychain, device probing, persistent TL.0009 service link with jog watchdog, rocking profiles; unit tests with a mock TL.0009.
 - `desktop/src/App.tsx`: cockpit shell — top bar, video stage, status bar.
 - `desktop/src/CameraDrawer.tsx`, `desktop/src/SystemDrawer.tsx`: camera drawers (network, lens, reticles) and the top drawer (device modules, TL.0009, tests, recording).
@@ -22,7 +23,6 @@ ONCAM/MKIS100TEST is an operator workstation for aligning the optical axis of CA
 - `.github/workflows/desktop.yml`: CI checks and installers for Windows/macOS/Linux; tags `v*` publish a GitHub Release.
 - `desktop/docs/TL0009_SERVICE.md`: service-command subset used by the new client.
 
-Do not delete the Python implementation until its hardware behavior has been reproduced and verified in Tauri.
 
 ## Non-negotiable UX rules
 
@@ -44,11 +44,11 @@ Do not delete the Python implementation until its hardware behavior has been rep
 
 - CAM 01 default: `192.168.1.68`, ONVIF `80`, RTSP `554`.
 - CAM 02 default: `192.168.1.108`, ONVIF `80`, RTSP `554`.
-- TL.0009 default project profile: `192.168.1.115:9762`.
+- TL.0009 default project profile: `192.168.1.115:9760` (verified on the device: the service protocol answers only on 9760; 9761/9762 accept TCP but stay silent).
 - Rangefinder: `192.168.1.7:20108`.
 - Relay X3 fallback: `192.168.127.254:9762`.
 
-TL.0009 movement in the new client must use only the ASCII service protocol (`$...#`). Do not add Pelco-D movement for TL.0009. The factory manual shows management port 9760, Pelco-D 9761 and RS-485 9762, but this installation explicitly uses configurable port 9762 for its working service profile. Preserve port configurability.
+TL.0009 movement in the new client must use only the ASCII service protocol (`$...#`). Do not add Pelco-D movement for TL.0009. The factory manual shows management port 9760, Pelco-D 9761 and RS-485 9762, and on this installation the service protocol answers on 9760 (configs saved with 9762 are migrated to 9760 in schema 4). Preserve port configurability.
 
 PAN commands are lower-case (`m n o p q u w x`); TILT commands are upper-case (`M N O P Q U W X`). Validate speeds and angles before sending commands. Stop both axes when a rocking profile is cancelled or fails.
 
@@ -68,7 +68,17 @@ Motion safety in the new client: any STOP (button, Esc, D-pad release) cancels a
 
 Implemented: compact cockpit layout, push drawers, resizing/swapping panes, configuration UI with schema migration, OS keychain (native backends), device modules in the summary (add, edit address, hide, remove) with live TCP link status, up to three configurable reticles per camera, TL.0009 service jog (dead-man + watchdog)/stop/self-test, five rocking profiles with progress events, TCP reachability tests, recording settings UI, hover D-pad and mouse lens gestures.
 
-Not yet implemented end-to-end: RTSP decode/render, full ONVIF zoom/focus adapter, FFmpeg recording, live telemetry polling, automatic axis-error computer vision, protocol-level device test adapters. The UI shows `—` or «не подключено» for these instead of sample values; keep it that way. UI placeholders are not evidence that hardware integration is complete. State this accurately in handoffs.
+Implemented since: RTSP video — `src-tauri/src/video.rs` (retina, digest auth with the keychain password, no retry after 401 so the camera account is not locked) forwards H.264/H.265 access units over a Tauri channel; `desktop/src/VideoSurface.tsx` decodes them with WebCodecs onto a canvas. Stream path is per camera (`streamPath`): CAM 01 Uniview `/media/video1`, CAM 02 `/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif`. H.265 plays only where the WebView has a hardware HEVC decoder.
+
+Also implemented (needs confirmation on the real hardware): ONVIF lens — `src-tauri/src/onvif.rs`, zoom via PTZ ContinuousMove and focus via Imaging Move, WS-Security digest stamped with the camera clock (both cameras have wrong clocks), plain TCP so system proxies (Hiddify on this PC) are bypassed, watchdog stops the lens 350 ms after the last step, a rejected password is not retried. Recording — `src-tauri/src/record.rs`, fragmented MP4 written from the received access units (no FFmpeg, no transcoding), segments rotate on key frames, optional JSON sidecar without credentials; MKV and the encrypted-secrets manifest are not implemented and shown as such. Alignment — `desktop/src/alignment.ts`, hot target = brightest compact blob, sub-pixel centroid, error = target minus centre of the first enabled reticle in video pixels; CAM 02 must be within tolerance first, «СВЕДЕНО» (white) when both are within `tolerancePx` for `stableMs`.
+
+Video decoding uses WebCodecs with `hardwareAcceleration: "prefer-software"`: measured on these cameras the D3D11 decoder held 5–6 frames and released them in bursts (150–240 ms draw stalls, visible as stutter while the platform moves); software decoding holds ≤2 frames and costs ~7% of one core for both streams. `[diag]` lines in the log appear only on anomalies (pause > 150 ms or dropped frames).
+
+Seeking: recorders write fragmented MP4 while recording (crash-safe) and `src-tauri/src/mp4fix.rs` rewrites each closed MP4 in the background into a regular MP4 with a full index (ftyp+moov+mdat) so Windows players can seek; on failure the fragmented file stays (VLC plays it). Split WebM (only if the webview lacks MP4 MediaRecorder) is not indexed. Recording auto-stop timer: `recording.stopAfterMinutes` (0 = manual). Split recording burns in the reticles when `recording.splitReticles` is on.
+
+Split recording (`desktop/src/splitRecorder.ts` + `src-tauri/src/split.rs`): both panes composed side by side in on-screen order and re-encoded by the webview MediaRecorder (MP4/H.264 when offered, else WebM); chunks are appended natively once a second; files «<product>_<cam>+<cam>_<local time>». It depends on webview timers, so do not minimise the window while it records. Recording layout: separate / split / both. Jog axis inversion (`jog.invertPan`, `jog.invertTilt`) swaps only what the D-pad sends; rocking profiles use absolute angles and are not inverted.
+
+Not yet implemented end-to-end: MKV recording, encrypted secrets manifest, telemetry in recording metadata, live telemetry polling, protocol-level device test adapters. The UI shows `—` or «не подключено» for these instead of sample values; keep it that way. UI placeholders are not evidence that hardware integration is complete. State this accurately in handoffs.
 
 ## Development workflow
 
@@ -93,4 +103,4 @@ git diff --check
 git status --short
 ```
 
-Preserve unrelated user changes. Use `apply_patch` for manual edits. Prefer small vertical slices that leave both the legacy application and the Tauri client buildable.
+Preserve unrelated user changes. Use `apply_patch` for manual edits. Prefer small vertical slices that keep the Tauri client buildable.

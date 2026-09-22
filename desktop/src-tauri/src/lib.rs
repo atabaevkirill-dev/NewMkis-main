@@ -1,3 +1,9 @@
+mod mp4fix;
+mod onvif;
+mod record;
+mod split;
+mod video;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -785,6 +791,13 @@ async fn stop_rocking(
     platform_stop(platform, ip, port, seq).await
 }
 
+/// Diagnostics from the UI (video timing) into the same log as the native side.
+#[tauri::command]
+fn diag_log(message: String) {
+    let message: String = message.chars().filter(|c| !c.is_control()).take(300).collect();
+    eprintln!("[diag] {message}");
+}
+
 /// WKWebView ignores `window.print()`, so on macOS the native print panel is opened from here.
 /// Returns false where the page should call `window.print()` itself. Runs on the main thread (AppKit).
 #[tauri::command]
@@ -795,17 +808,6 @@ fn print_page(webview: tauri::Webview) -> Result<bool, String> {
     } else {
         Ok(false)
     }
-}
-
-#[tauri::command]
-fn camera_lens_step(camera_id: String, mode: String, direction: i8) -> Result<(), String> {
-    if !matches!(camera_id.as_str(), "camera1" | "camera2") {
-        return Err("Неизвестная камера".into());
-    }
-    if !matches!(mode.as_str(), "zoom" | "focus") || !matches!(direction, -1 | 1) {
-        return Err("Некорректная команда объектива".into());
-    }
-    Err("ONVIF-адаптер объектива ещё не подключён к новому клиенту".into())
 }
 
 // ---------------------------------------------------------------- device probing
@@ -897,11 +899,17 @@ async fn probe_devices(
 pub fn run() {
     let platform = Arc::new(Platform::default());
     let watchdog = Arc::clone(&platform);
+    let lens = Arc::new(onvif::Lens::default());
+    let lens_watchdog = Arc::clone(&lens);
     tauri::Builder::default()
         .manage(platform)
+        .manage(Arc::new(video::Streams::default()))
+        .manage(lens)
+        .manage(Arc::new(split::SplitFiles::default()))
         .plugin(tauri_plugin_dialog::init())
         .setup(move |_app| {
             spawn_jog_watchdog(watchdog);
+            onvif::spawn_lens_watchdog(lens_watchdog);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -916,7 +924,15 @@ pub fn run() {
             platform_stop,
             platform_self_test,
             print_page,
-            camera_lens_step,
+            diag_log,
+            onvif::camera_lens_step,
+            video::camera_stream_start,
+            video::camera_stream_stop,
+            video::recording_start,
+            video::recording_stop,
+            split::split_open,
+            split::split_chunk,
+            split::split_close,
             start_rocking,
             stop_rocking
         ])

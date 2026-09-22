@@ -19,9 +19,10 @@ import {
   type ModuleDraft,
 } from "./config";
 import { selfTestRecord, tcpRecord, testKey } from "./report";
-import { NumberField, Toggle, useConfirm } from "./ui";
+import { Countdown, NumberField, Toggle, useConfirm } from "./ui";
 import type { JogControl } from "./useJog";
-import type { AppConfig, DeviceKind, ModuleView, Notify, ProbeResult, RecordingConfig, RockingEvent, RockingProfile, TestRecord } from "./types";
+import type { SplitStatus } from "./splitRecorder";
+import type { AppConfig, CameraConfig, DeviceKind, ModuleView, Notify, ProbeResult, RecordingConfig, RecordingEvent, RockingEvent, RockingProfile, TestRecord, VideoStats } from "./types";
 
 export type SystemTab = "summary" | "platform" | "tests" | "record";
 type SetConfig = Dispatch<SetStateAction<AppConfig>>;
@@ -249,6 +250,8 @@ function PlatformPanel({ config, setConfig, jog, rocking, notify }: {
           <div className="jog-speeds">
             <NumberField label="PAN" unit="°/с" value={config.jog.panSpeed} min={0.1} max={panSpeed} onChange={(value) => patchJog({ panSpeed: value })} />
             <NumberField label="TILT" unit="°/с" value={config.jog.tiltSpeed} min={0.1} max={tiltSpeed} onChange={(value) => patchJog({ tiltSpeed: value })} />
+            <Toggle value={config.jog.invertPan} onChange={(invertPan) => patchJog({ invertPan })} label="Инверт PAN" title="Поменять местами ◀ и ▶" />
+            <Toggle value={config.jog.invertTilt} onChange={(invertTilt) => patchJog({ invertTilt })} label="Инверт TILT" title="Поменять местами ▲ и ▼" />
           </div>
         </div>
         <p className="hint">Движение только пока кнопка удерживается · Esc — стоп</p>
@@ -385,46 +388,95 @@ function TestsPanel({ config, setConfig, modules, testLog, onRecords, onProbeRes
   );
 }
 
-function RecordPanel({ config, setConfig }: { config: AppConfig; setConfig: SetConfig }) {
+export interface RecordingControl {
+  active: boolean;
+  files: Partial<Record<CameraConfig["id"], RecordingEvent>>;
+  split: SplitStatus | null;
+  /** Auto-stop time (epoch ms) of the running recording, if a timer was set. */
+  endsAt: number | null;
+  video: Record<CameraConfig["id"], VideoStats>;
+  start: () => void;
+  stop: () => void;
+}
+
+const megabytes = (bytes: number) => `${(bytes / 1_048_576).toFixed(1)} МБ`;
+const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+function splitLine(control: RecordingControl, bothPlaying: boolean): string {
+  const status = control.split;
+  if (status?.state === "error") return `ошибка: ${status.message ?? "—"}`;
+  if (status?.file) return `${control.active ? "" : "записано: "}${fileName(status.file)} · ${megabytes(status.bytes)}`;
+  return bothPlaying ? "готово · кадр обеих камер, перекодирование в окне" : "нужны оба видеопотока";
+}
+
+function recordingLine(control: RecordingControl, id: CameraConfig["id"], selected: boolean): string {
+  if (!selected) return "не выбрана";
+  const event = control.files[id];
+  if (event?.state === "error") return `ошибка: ${event.message ?? "—"}`;
+  if (control.active) {
+    if (control.video[id].state !== "playing") return "нет видеопотока — запись начнётся, когда он пойдёт";
+    return event?.file ? `${fileName(event.file)} · ${megabytes(event.bytes)}` : "ожидание ключевого кадра…";
+  }
+  return event?.file ? `записано: ${fileName(event.file)} · ${megabytes(event.bytes)}` : "готова";
+}
+
+function RecordPanel({ config, setConfig, control }: { config: AppConfig; setConfig: SetConfig; control: RecordingControl }) {
   const recording = config.recording;
   const patch = (update: Partial<RecordingConfig>) => setConfig((current) => ({ ...current, recording: { ...current.recording, ...update } }));
+  const locked = control.active;
+  // Without a chosen directory recording goes to «Videos/MKIS100TEST».
+  const bothPlaying = control.video.camera1.state === "playing" && control.video.camera2.state === "playing";
+  const separate = recording.layout !== "split";
+  const splitWanted = recording.layout !== "separate";
+  const ready = (!separate || recording.camera1 || recording.camera2) && (!splitWanted || bothPlaying);
   return (
     <div className="record-panel">
       <div className="record-sources">
-        <button className={recording.camera1 ? "selected blue" : ""} onClick={() => patch({ camera1: !recording.camera1 })} type="button" aria-pressed={recording.camera1}><Camera /> {moduleName(config, "camera1")}</button>
-        <button className={recording.camera2 ? "selected amber" : ""} onClick={() => patch({ camera2: !recording.camera2 })} type="button" aria-pressed={recording.camera2}><Camera /> {moduleName(config, "camera2")}</button>
+        <button className={recording.camera1 || !separate ? "selected blue" : ""} disabled={locked || !separate} onClick={() => patch({ camera1: !recording.camera1 })} type="button" aria-pressed={recording.camera1}><Camera /> {moduleName(config, "camera1")}</button>
+        <button className={recording.camera2 || !separate ? "selected amber" : ""} disabled={locked || !separate} onClick={() => patch({ camera2: !recording.camera2 })} type="button" aria-pressed={recording.camera2}><Camera /> {moduleName(config, "camera2")}</button>
       </div>
       <div className="record-settings">
         <label className="field wide">
           <span>Каталог записи</span>
           <div className="input-action">
-            <input value={recording.directory} placeholder="Выберите каталог" readOnly />
-            <button type="button" title="Выбрать каталог" onClick={() => void chooseRecordingDirectory().then((path) => path && patch({ directory: path }))}><FolderOpen /></button>
+            <input value={recording.directory} placeholder="Видео\MKIS100TEST (по умолчанию)" readOnly title={recording.directory || "Если каталог не выбран, запись идёт в папку «Видео\MKIS100TEST»"} />
+            <button type="button" title="Выбрать каталог" disabled={locked} onClick={() => void chooseRecordingDirectory().then((path) => path && patch({ directory: path }))}><FolderOpen /></button>
           </div>
         </label>
         <label className="field">
-          <span>Формат</span>
-          <select value={recording.format} onChange={(event) => patch({ format: event.target.value as RecordingConfig["format"] })}>
-            <option value="mkv">MKV</option>
-            <option value="mp4">MP4</option>
+          <span>Режим записи</span>
+          <select value={recording.layout} disabled={locked} onChange={(event) => patch({ layout: event.target.value as RecordingConfig["layout"] })}>
+            <option value="separate">Раздельно · MP4 на камеру</option>
+            <option value="split">Сплит · обе камеры в одном файле</option>
+            <option value="both">Раздельно + сплит</option>
           </select>
         </label>
         <NumberField label="Сегмент, мин" integer value={recording.segmentMinutes} min={1} max={240} onChange={(segmentMinutes) => patch({ segmentMinutes })} />
+        <NumberField label="Стоп через, мин" integer value={recording.stopAfterMinutes} min={0} max={1440} onChange={(stopAfterMinutes) => patch({ stopAfterMinutes })} />
       </div>
       <div className="record-meta">
-        <div className="setting-line"><span>Метаданные: IP, ONVIF, время, телеметрия поворотки</span><Toggle value={recording.includeMetadata} onChange={(includeMetadata) => patch({ includeMetadata })} /></div>
-        <div className="setting-line warning"><span>Пароли в зашифрованном manifest</span><Toggle value={recording.includeEncryptedSecrets} onChange={(includeEncryptedSecrets) => patch({ includeEncryptedSecrets })} /></div>
-        <p className="hint">Пароли никогда не записываются открытым текстом.</p>
+        <div className="setting-line" title="Пароли в запись и метаданные не попадают; зашифрованный manifest паролей не реализован"><span>Метаданные (JSON рядом с файлом): камера, адрес потока, кодек, время</span><Toggle value={recording.includeMetadata} disabled={locked} onChange={(includeMetadata) => patch({ includeMetadata })} /></div>
+        {separate && <p className="hint">{moduleName(config, "camera1")}: {recordingLine(control, "camera1", recording.camera1)}</p>}
+        {separate && <p className="hint">{moduleName(config, "camera2")}: {recordingLine(control, "camera2", recording.camera2)}</p>}
+        {splitWanted && <p className="hint">Сплит: {splitLine(control, bothPlaying)}</p>}
+        <p className="hint">Таймер: {control.active && control.endsAt !== null ? <>остановится в {new Date(control.endsAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} · осталось <Countdown endsAt={control.endsAt} /></> : recording.stopAfterMinutes > 0 ? `запись остановится через ${recording.stopAfterMinutes} мин` : "выключен (0) · остановка вручную"}</p>
+        {splitWanted && <div className="setting-line"><span>Прицелы в сплит-записи</span><Toggle value={recording.splitReticles} onChange={(splitReticles) => patch({ splitReticles })} /></div>}
       </div>
-      <button className="record-start" type="button" disabled title="FFmpeg-запись ещё не подключена к новому клиенту">
-        <CircleDot /> Начать запись
-        <small>не подключено</small>
+      <button
+        className={`record-start ${control.active ? "active" : ""}`}
+        type="button"
+        disabled={!control.active && !ready}
+        onClick={control.active ? control.stop : control.start}
+        title={ready ? (separate ? "Раздельно: MP4 пишется прямо из потока камеры, без перекодирования" : "Сплит: обе камеры рядом в одном файле") : splitWanted && !bothPlaying ? "Для сплита нужны оба видеопотока" : "Выберите хотя бы одну камеру"}
+      >
+        {control.active ? <Square /> : <CircleDot />} {control.active ? "Остановить" : "Начать запись"}
+        <small>{control.active ? "идёт запись" : !ready ? (splitWanted && !bothPlaying ? "нужны обе камеры" : "выберите камеру") : recording.layout === "split" ? "сплит · один файл" : recording.layout === "both" ? "MP4 + сплит" : "MP4 · без перекодирования"}</small>
       </button>
     </div>
   );
 }
 
-export function SystemDrawer({ tab, setTab, config, setConfig, modules, probes, probing, onProbe, onProbeResults, testLog, onTestRecords, onReport, jog, rocking, notify, onClose }: {
+export function SystemDrawer({ tab, setTab, config, setConfig, modules, probes, probing, onProbe, onProbeResults, testLog, onTestRecords, onReport, jog, rocking, recording, notify, onClose }: {
   tab: SystemTab;
   setTab: (tab: SystemTab) => void;
   config: AppConfig;
@@ -439,6 +491,7 @@ export function SystemDrawer({ tab, setTab, config, setConfig, modules, probes, 
   onReport: () => void;
   jog: JogControl;
   rocking: RockingEvent | null;
+  recording: RecordingControl;
   notify: Notify;
   onClose: () => void;
 }) {
@@ -461,7 +514,7 @@ export function SystemDrawer({ tab, setTab, config, setConfig, modules, probes, 
         {tab === "tests" && (
           <TestsPanel config={config} setConfig={setConfig} modules={modules} testLog={testLog} onRecords={onTestRecords} onProbeResults={onProbeResults} onReport={onReport} notify={notify} />
         )}
-        {tab === "record" && <RecordPanel config={config} setConfig={setConfig} />}
+        {tab === "record" && <RecordPanel config={config} setConfig={setConfig} control={recording} />}
       </div>
     </section>
   );

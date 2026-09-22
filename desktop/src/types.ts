@@ -65,6 +65,8 @@ export interface CameraConfig {
   ip: string;
   onvifPort: number;
   rtspPort: number;
+  /** RTSP path after host:port, e.g. `/media/video1` (Uniview main stream). */
+  streamPath: string;
   username: string;
   profile: string;
   autoConnect: boolean;
@@ -87,6 +89,9 @@ export interface RockingProfile {
 }
 
 export interface JogConfig {
+  /** Swap the D-pad directions of an axis when the platform is mounted the other way round. */
+  invertPan: boolean;
+  invertTilt: boolean;
   panSpeed: number;
   tiltSpeed: number;
 }
@@ -96,6 +101,12 @@ export interface RecordingConfig {
   camera2: boolean;
   directory: string;
   format: "mkv" | "mp4";
+  /** separate: one pass-through MP4 per camera; split: both side by side in one re-encoded file. */
+  layout: "separate" | "split" | "both";
+  /** Burn the reticles into the split recording. */
+  splitReticles: boolean;
+  /** Stop recording automatically after this many minutes; 0 = until stopped by hand. */
+  stopAfterMinutes: number;
   segmentMinutes: number;
   includeMetadata: boolean;
   includeEncryptedSecrets: boolean;
@@ -156,3 +167,28 @@ export interface RockingEvent {
 }
 
 export type Notify = (text: string, tone?: "info" | "error") => void;
+
+export type StreamEvent =
+  | { kind: "config"; codec: string; codedWidth: number; codedHeight: number; width: number; height: number; description: Uint8Array }
+  | { kind: "frame"; key: boolean; timestamp: number; data: Uint8Array }
+  | { kind: "state"; state: "connecting" | "playing" | "error"; message: string };
+
+/** Progress of one camera's recording, reported by the native recorder. */
+export interface RecordingEvent {
+  cameraId: CameraConfig["id"];
+  state: "recording" | "stopped" | "error";
+  file: string | null;
+  bytes: number;
+  message: string | null;
+}
+
+/** Live state of one video pane; `off` means the stream is not requested. */
+export interface VideoStats {
+  state: "off" | "connecting" | "playing" | "error";
+  fps: number | null;
+  width: number | null;
+  height: number | null;
+  message: string;
+  /** Frames skipped since the stream opened (waiting for a key frame after overload or a decoder error). */
+  dropped: number;
+}

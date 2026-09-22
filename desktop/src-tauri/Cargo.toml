@@ -1,6 +1,6 @@
 [package]
 name = "oncam-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "MKIS100TEST axis alignment workstation"
 authors = ["ONCAM"]
 edition = "2021"
@@ -17,6 +17,13 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+retina = "0.4"
+futures = "0.3"
+url = "2"
+tokio = { version = "1", features = ["time"] }
+sha1 = "0.10"
+base64 = "0.22"
+rand = "0.8"
 
 # keyring 3 has no default credential store: without a platform feature it silently
 # falls back to an in-memory mock and passwords are never persisted.

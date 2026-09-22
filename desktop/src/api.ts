@@ -1,8 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { createDefaultConfig, migrateConfig } from "./config";
-import type { AppConfig, ProbeResult, ProbeTarget, RockingEvent, RockingProfile } from "./types";
+import { createDefaultConfig, migrateConfig, moduleName } from "./config";
+import type { AppConfig, CameraConfig, ProbeResult, ProbeTarget, RecordingEvent, RockingEvent, RockingProfile, StreamEvent } from "./types";
 
 export type JogDirection = "left" | "right" | "up" | "down";
 
@@ -110,12 +110,93 @@ export async function printPage(): Promise<void> {
   window.print();
 }
 
-export async function cameraLensStep(cameraId: string, mode: "zoom" | "focus", direction: number): Promise<void> {
+/** One wheel or button step; the native side keeps the move going while steps arrive, then stops it. */
+export async function cameraLensStep(camera: CameraConfig, mode: "zoom" | "focus", direction: number): Promise<void> {
   if (!inTauri()) throw new Error(BROWSER_MODE);
-  await invoke("camera_lens_step", { cameraId, mode, direction });
+  await invoke("camera_lens_step", { cameraId: camera.id, ip: camera.ip, port: camera.onvifPort, username: camera.username, mode, direction });
+}
+
+const STREAM_STATES = ["connecting", "playing", "error"] as const;
+
+/** Decodes the binary messages of `video.rs`; unknown or truncated messages are dropped. */
+function parseStreamMessage(buffer: ArrayBuffer): StreamEvent | null {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  if (bytes[0] === 2 && bytes.length >= 10) {
+    return { kind: "frame", key: bytes[1] === 1, timestamp: Number(view.getBigInt64(2, true)), data: bytes.subarray(10) };
+  }
+  if (bytes[0] === 1 && bytes.length >= 10) {
+    const codecEnd = 10 + bytes[9];
+    return {
+      kind: "config",
+      codedWidth: view.getUint16(1, true),
+      codedHeight: view.getUint16(3, true),
+      width: view.getUint16(5, true),
+      height: view.getUint16(7, true),
+      codec: new TextDecoder().decode(bytes.subarray(10, codecEnd)),
+      description: bytes.slice(codecEnd),
+    };
+  }
+  if (bytes[0] === 3 && bytes.length >= 2 && bytes[1] < STREAM_STATES.length) {
+    return { kind: "state", state: STREAM_STATES[bytes[1]], message: new TextDecoder().decode(bytes.subarray(2)) };
+  }
+  return null;
+}
+
+/**
+ * Opens the camera's RTSP stream on the native side (password comes from the keychain there) and
+ * delivers encoded frames. The returned function stops exactly this stream, even if called early.
+ */
+export function startCameraStream(camera: CameraConfig, onEvent: (event: StreamEvent) => void): { started: Promise<void>; stop: () => void } {
+  if (!inTauri()) return { started: Promise.reject(new Error(BROWSER_MODE)), stop: () => undefined };
+  const token = nextSeq();
+  const channel = new Channel<ArrayBuffer>((buffer) => {
+    const event = parseStreamMessage(buffer);
+    if (event) onEvent(event);
+  });
+  const started = invoke<void>("camera_stream_start", {
+    cameraId: camera.id, ip: camera.ip, port: camera.rtspPort, username: camera.username, path: camera.streamPath, token, channel,
+  });
+  const stop = () => {
+    // Wait for the start to land first, otherwise the stop could arrive before the task exists.
+    void started.catch(() => undefined).then(() => invoke("camera_stream_stop", { cameraId: camera.id, token })).catch(() => undefined);
+  };
+  return { started, stop };
+}
+
+/**
+ * Records the selected cameras' running streams to fragmented MP4 (no transcoding). Files are named
+ * «<product title>_<camera name>_<local time>.mp4»; returns the directory actually used.
+ */
+export async function startRecording(config: AppConfig): Promise<string> {
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  const { camera1, camera2, directory, segmentMinutes, includeMetadata } = config.recording;
+  const settings = {
+    camera1, camera2, directory, segmentMinutes, includeMetadata,
+    title: config.productTitle,
+    camera1Name: moduleName(config, "camera1"),
+    camera2Name: moduleName(config, "camera2"),
+    utcOffsetMinutes: -new Date().getTimezoneOffset(),
+  };
+  return invoke<string>("recording_start", { settings });
+}
+
+export async function stopRecording(): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("recording_stop");
+}
+
+export async function onRecordingState(handler: (event: RecordingEvent) => void): Promise<UnlistenFn> {
+  if (!inTauri()) return () => undefined;
+  return listen<RecordingEvent>("recording-state", (event) => handler(event.payload));
 }
 
 export async function onRockingState(handler: (event: RockingEvent) => void): Promise<UnlistenFn> {
   if (!inTauri()) return () => undefined;
   return listen<RockingEvent>("rocking-state", (event) => handler(event.payload));
+}
+
+/** Writes a diagnostic line into the native log (used for video timing measurements). */
+export function diagLog(message: string): void {
+  if (inTauri()) void invoke("diag_log", { message }).catch(() => undefined);
 }

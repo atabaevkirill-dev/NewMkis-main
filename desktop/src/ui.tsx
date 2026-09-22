@@ -88,3 +88,17 @@ export function useConfirm(timeoutMs = 3500): [armed: boolean, trigger: (action:
   };
   return [armed, trigger];
 }
+
+/** Time left until `endsAt` (epoch ms) as h:mm:ss / m:ss, ticking once a second. */
+export function Countdown({ endsAt }: { endsAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const total = Math.max(0, Math.ceil((endsAt - now) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total / 60) % 60;
+  const seconds = String(total % 60).padStart(2, "0");
+  return <span className="countdown">{hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`}</span>;
+}

@@ -64,6 +64,45 @@ export function reticlePrimitives(reticle: ReticleConfig): Primitive[] {
   }
 }
 
+/**
+ * Draws reticles on a 2D canvas exactly as the SVG layer shows them, for recordings.
+ * `k` converts the on-screen CSS pixels of the reticle settings into canvas pixels.
+ */
+export function drawReticles(context: CanvasRenderingContext2D, reticles: ReticleConfig[], cx: number, cy: number, k: number) {
+  const stroke = (items: Primitive[], color: string, extra: number) => {
+    context.strokeStyle = color;
+    context.fillStyle = color;
+    for (const item of items) {
+      context.beginPath();
+      if (item.kind === "line") {
+        context.lineWidth = Math.max(1, (item.weight + extra) * k);
+        context.lineCap = extra ? "square" : "butt";
+        context.moveTo(item.x1 * k, item.y1 * k);
+        context.lineTo(item.x2 * k, item.y2 * k);
+        context.stroke();
+      } else if (item.fill) {
+        context.arc(0, 0, Math.max(0.5, (item.r + extra / 2) * k), 0, Math.PI * 2);
+        context.fill();
+      } else {
+        context.lineWidth = Math.max(1, (item.weight + extra) * k);
+        context.arc(0, 0, item.r * k, 0, Math.PI * 2);
+        context.stroke();
+      }
+    }
+  };
+  for (const reticle of reticles) {
+    if (!reticle.enabled) continue;
+    const items = reticlePrimitives(reticle);
+    context.save();
+    context.translate(cx + reticle.offsetX * k, cy + reticle.offsetY * k);
+    context.globalAlpha = reticle.opacity * 0.7;
+    if (reticle.outline) stroke(items, "#000000", 2);
+    context.globalAlpha = reticle.opacity;
+    stroke(items, reticle.color, 0);
+    context.restore();
+  }
+}
+
 function Primitives({ items, color, halo }: { items: Primitive[]; color: string; halo: boolean }) {
   const extra = halo ? 2 : 0;
   return (

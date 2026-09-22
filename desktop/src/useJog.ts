@@ -5,6 +5,7 @@ import type { JogConfig, Notify } from "./types";
 
 const KEEPALIVE_MS = 250;
 const LABELS: Record<JogDirection, string> = { left: "ВЛЕВО", right: "ВПРАВО", up: "ВВЕРХ", down: "ВНИЗ" };
+const OPPOSITE: Record<JogDirection, JogDirection> = { left: "right", right: "left", up: "down", down: "up" };
 
 export interface JogControl {
   /** Pointer handlers for a hold-to-move button. */
@@ -49,10 +50,12 @@ export function useJog(target: { ip: string; port: number; label: string }, spee
     if (active.current === direction) return;
     active.current = direction;
     clearTimer();
-    const { target: { ip, port, label }, speeds: { panSpeed, tiltSpeed }, notify: report } = latest.current;
+    const { target: { ip, port, label }, speeds: { panSpeed, tiltSpeed, invertPan, invertTilt }, notify: report } = latest.current;
     const speed = direction === "left" || direction === "right" ? panSpeed : tiltSpeed;
     timer.current = window.setInterval(() => void platformKeepalive().catch(() => undefined), KEEPALIVE_MS);
-    platformJog(ip, port, direction, speed)
+    // Inversion changes only what is sent: the button keeps its meaning on screen.
+    const sent = (invertPan && (direction === "left" || direction === "right")) || (invertTilt && (direction === "up" || direction === "down")) ? OPPOSITE[direction] : direction;
+    platformJog(ip, port, sent, speed)
       .then((reply) => report(`${label} · ${LABELS[direction]} ${speed}°/с · ${reply}`))
       .catch((error) => {
         if (active.current === direction) {

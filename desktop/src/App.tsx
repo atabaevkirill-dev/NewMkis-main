@@ -3,15 +3,19 @@ import { flushSync } from "react-dom";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { AlignCenter, ArrowLeftRight, CircleDot, Crosshair, GripVertical, PanelTopOpen, Pencil, Radio, Save, SlidersHorizontal, Square } from "lucide-react";
 import { version } from "../package.json";
-import { cameraLensStep, inTauri, loadConfig, onRockingState, persistConfig, printPage, probeModules } from "./api";
+import { cameraLensStep, inTauri, loadConfig, onRecordingState, onRockingState, persistConfig, printPage, probeModules, startRecording, stopRecording } from "./api";
 import { CameraDrawer } from "./CameraDrawer";
-import { MAX_TITLE_LENGTH, createDefaultConfig, listModules, moduleName } from "./config";
+import { MAX_TITLE_LENGTH, OFF_STATS, createDefaultConfig, listModules, moduleName } from "./config";
 import { PrintReport } from "./PrintReport";
 import { ReticleLayer } from "./Reticle";
 import { buildReport, reportFileStamp, testKey } from "./report";
 import { SystemDrawer, type SystemTab } from "./SystemDrawer";
 import { useJog, type JogControl } from "./useJog";
-import type { AppConfig, CameraConfig, ModuleView, Notify, ProbeResult, ReticleConfig, RockingEvent, TestRecord } from "./types";
+import type { AppConfig, CameraConfig, ModuleView, Notify, ProbeResult, RecordingEvent, ReticleConfig, RockingEvent, TestRecord, VideoStats } from "./types";
+import { VideoSurface } from "./VideoSurface";
+import { Countdown } from "./ui";
+import { SplitRecorder, type SplitSource, type SplitStatus } from "./splitRecorder";
+import { axisError, signed, within, type AxisError, type TargetFix } from "./alignment";
 
 type Drawer = "camera1" | "camera2" | null;
 type Notice = { text: string; tone: "info" | "error" };
@@ -20,7 +24,18 @@ const PROBE_INTERVAL_MS = 5000;
 const NOTICE_MS = 5000;
 const LENS_STEP_MS = 90;
 
-const VideoPane = memo(function VideoPane({ camera, label, variant, jog }: { camera: CameraConfig; label: string; variant: "optical" | "thermal"; jog: JogControl }) {
+const VideoPane = memo(function VideoPane({ camera, label, variant, jog, streaming, restartKey, video, onVideoStats, measure, onTarget }: {
+  camera: CameraConfig;
+  label: string;
+  variant: "optical" | "thermal";
+  jog: JogControl;
+  streaming: boolean;
+  restartKey: number;
+  video: VideoStats;
+  onVideoStats: (id: CameraConfig["id"], stats: VideoStats) => void;
+  measure: boolean;
+  onTarget: (id: CameraConfig["id"], fix: TargetFix | null) => void;
+}) {
   const paneRef = useRef<HTMLDivElement>(null);
   const cameraRef = useRef(camera);
   cameraRef.current = camera;
@@ -47,7 +62,7 @@ const VideoPane = memo(function VideoPane({ camera, label, variant, jog }: { cam
       const direction = event.deltaY < 0 ? 1 : -1;
       const mode = rightMouseDown.current ? "focus" : "zoom";
       show(mode === "zoom" ? `ZOOM ${direction > 0 ? "+" : "−"}` : `FOCUS ${direction > 0 ? "FAR" : "NEAR"}`);
-      cameraLensStep(cameraRef.current.id, mode, direction).catch(() => show("ONVIF · НЕ ПОДКЛЮЧЁН"));
+      cameraLensStep(cameraRef.current, mode, direction).catch((error) => show(`ONVIF · ${String(error)}`));
     };
     pane.addEventListener("wheel", onWheel, { passive: false });
     return () => {
@@ -66,10 +81,11 @@ const VideoPane = memo(function VideoPane({ camera, label, variant, jog }: { cam
       onPointerCancel={() => { rightMouseDown.current = false; }}
       onPointerLeave={() => { rightMouseDown.current = false; }}
     >
-      <div className="video-placeholder" />
+      {(video.state === "off" || video.state === "error") && <div className="video-placeholder" />}
+      <VideoSurface camera={camera} active={streaming} restartKey={restartKey} onStats={onVideoStats} measure={measure} onTarget={onTarget} />
       <ReticleLayer reticles={camera.reticles} />
       {camera.osd && (
-        <div className="camera-osd"><strong>{label}</strong><span>— FPS</span><span>ONVIF —</span></div>
+        <div className="camera-osd"><strong>{label}</strong><span className="fps">{video.fps !== null ? Math.round(video.fps) : "—"} FPS</span><span>ONVIF —</span></div>
       )}
       <div className="video-dpad" aria-label="Поворотка: удерживайте кнопку">
         <i /><button type="button" {...jog.bind("up")} aria-label="Поворотка вверх">▲</button><i />
@@ -79,11 +95,13 @@ const VideoPane = memo(function VideoPane({ camera, label, variant, jog }: { cam
         <i /><button type="button" {...jog.bind("down")} aria-label="Поворотка вниз">▼</button><i />
       </div>
       {lensIndicator && <div className="lens-indicator">{lensIndicator}</div>}
-      <div className="stream-state">
-        <Radio />
-        <span>Нет потока</span>
-        <code>RTSP {camera.ip}:{camera.rtspPort}</code>
-      </div>
+      {video.state !== "playing" && (
+        <div className={`stream-state ${video.state}`} title={video.message}>
+          <Radio />
+          <span>{video.state === "connecting" ? "Подключение…" : video.state === "error" ? video.message || "Ошибка потока" : "Нет потока"}</span>
+          <code>RTSP {camera.ip}:{camera.rtspPort}{camera.streamPath}</code>
+        </div>
+      )}
     </div>
   );
 });
@@ -131,30 +149,63 @@ function ProductTitle({ value, onChange }: { value: string; onChange: (value: st
   );
 }
 
-function StatusBar({ config, modules, probes, rocking, notice }: {
+interface AlignmentView {
+  state: "off" | "noTarget" | "reference" | "measuring" | "aligned";
+  optical: AxisError | null;
+  reference: AxisError | null;
+}
+
+function alignmentLabel(config: AppConfig, view: AlignmentView): string {
+  const reference = moduleName(config, "camera2");
+  switch (view.state) {
+    case "off":
+      return "СВЕДЕНИЕ ВЫКЛ";
+    case "noTarget":
+      return view.reference ? `МИШЕНЬ НЕ НАЙДЕНА В ${moduleName(config, "camera1")}` : `МИШЕНЬ НЕ НАЙДЕНА В ${reference}`;
+    case "reference":
+      return `НАВЕДИТЕ ${reference}: ${signed(view.reference!.dx)} / ${signed(view.reference!.dy)}`;
+    case "measuring":
+      return "СВЕДЕНИЕ · ИЗМЕРЕНИЕ";
+    case "aligned":
+      return "СВЕДЕНО";
+  }
+}
+
+function StatusBar({ config, modules, probes, video, alignment, rocking, notice }: {
   config: AppConfig;
   modules: ModuleView[];
   probes: Record<string, ProbeResult>;
+  video: Record<CameraConfig["id"], VideoStats>;
+  alignment: AlignmentView;
   rocking: RockingEvent | null;
   notice: Notice | null;
 }) {
   const chips = modules.filter((module) => !module.hidden && module.id !== "camera1" && module.id !== "camera2");
-  const camera = (id: "camera1" | "camera2", label: string, tone: string) => (
-    <div className={`cam-status ${tone}`} title={probes[id]?.error ?? "Видеопоток ещё не подключён"}>
-      <i className={probes[id]?.connected ? "on" : ""} />
-      <b>{label}</b>
-      <span>— FPS</span>
-      <span>—</span>
-    </div>
-  );
+  const camera = (id: "camera1" | "camera2", label: string, tone: string) => {
+    const stats = video[id];
+    const playing = stats.state === "playing";
+    const title = playing ? "Видеопоток идёт" : stats.message || probes[id]?.error || (stats.state === "connecting" ? "Подключение к потоку" : "Видеопоток не подключён");
+    return (
+      <div className={`cam-status ${tone}`} title={title}>
+        <i className={playing || probes[id]?.connected ? "on" : ""} />
+        <b>{label}</b>
+        <span className="fps">{playing && stats.fps !== null ? Math.round(stats.fps) : "—"} FPS</span>
+        <span className="resolution">{playing && stats.width ? `${stats.width}×${stats.height}` : "—"}</span>
+      </div>
+    );
+  };
   return (
     <footer className="status-bar">
       {camera("camera1", moduleName(config, "camera1"), "blue")}
       {camera("camera2", moduleName(config, "camera2"), "amber")}
-      <div className="metrics" title="Живая телеметрия ещё не подключена">
-        {["PAN", "TILT", "RANGE", "ΔX/ΔY"].map((label) => (
-          <div className="metric" key={label}><span>{label}</span><strong>—</strong></div>
+      <div className="metrics">
+        {["PAN", "TILT", "RANGE"].map((label) => (
+          <div className="metric" key={label} title="Живая телеметрия ещё не подключена"><span>{label}</span><strong>—</strong></div>
         ))}
+        <div className="metric delta" title={`Ошибка ${moduleName(config, "camera1")} относительно прицела, px видео`}>
+          <span>ΔX/ΔY</span>
+          <strong>{alignment.optical ? `${signed(alignment.optical.dx)} / ${signed(alignment.optical.dy)}` : "—"}</strong>
+        </div>
       </div>
       <div className="module-chips">
         {chips.map((module) => {
@@ -168,9 +219,12 @@ function StatusBar({ config, modules, probes, rocking, notice }: {
         {rocking?.state === "running" && <span className="chip-status rocking"><i />КАЧКА {rocking.cycle}/{rocking.cycles}</span>}
       </div>
       <div className={`notice ${notice?.tone ?? ""}`} title={notice?.text}>{notice?.text}</div>
-      <div className={`align-state ${config.alignment.enabled ? "on" : ""}`} title="Компьютерное измерение ΔX/ΔY ещё не реализовано">
+      <div
+        className={`align-state ${config.alignment.enabled ? "on" : ""} ${alignment.state === "aligned" ? "aligned" : ""}`}
+        title={`Мишень ищется как самое горячее пятно. ${moduleName(config, "camera2")} — эталон: сначала наведите мишень в его прицел. Допуск ±${config.alignment.tolerancePx} px в течение ${config.alignment.stableMs} мс.`}
+      >
         <Crosshair />
-        {config.alignment.enabled ? "СВЕДЕНИЕ · НЕТ ИЗМЕРЕНИЯ" : "СВЕДЕНИЕ ВЫКЛ"}
+        {alignmentLabel(config, alignment)}
       </div>
     </footer>
   );
@@ -190,6 +244,14 @@ export default function App() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [testLog, setTestLog] = useState<Record<string, TestRecord>>({});
   const [reportAt, setReportAt] = useState(() => new Date());
+  const [video, setVideo] = useState<Record<CameraConfig["id"], VideoStats>>({ camera1: OFF_STATS, camera2: OFF_STATS });
+  // Operator override of «Автоподключение» for this session; unset follows the config.
+  const [streamOverride, setStreamOverride] = useState<Partial<Record<CameraConfig["id"], boolean>>>({});
+  const [restartKeys, setRestartKeys] = useState<Record<CameraConfig["id"], number>>({ camera1: 0, camera2: 0 });
+  const [recordingActive, setRecordingActive] = useState(false);
+  /** When the auto-stop timer ends the recording (epoch ms), or null for a manual stop. */
+  const [recordingEndsAt, setRecordingEndsAt] = useState<number | null>(null);
+  const [recordingFiles, setRecordingFiles] = useState<Partial<Record<CameraConfig["id"], RecordingEvent>>>({});
   const stageRef = useRef<HTMLDivElement>(null);
   const noticeTimer = useRef<number | null>(null);
   const probeInFlight = useRef(false);
@@ -272,6 +334,112 @@ export default function App() {
     };
   }, [notify]);
 
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    onRecordingState((event) => {
+      setRecordingFiles((current) => ({ ...current, [event.cameraId]: event }));
+      if (event.state === "error") notify(`Запись ${moduleName(configRef.current, event.cameraId)}: ${event.message ?? "ошибка"}`, "error");
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [notify]);
+
+  const splitRecorder = useRef<SplitRecorder | null>(null);
+  const [splitStatus, setSplitStatus] = useState<SplitStatus | null>(null);
+  const swappedRef = useRef(false);
+
+  const recordingControl = useMemo(() => {
+    const stopAll = async () => {
+      await Promise.allSettled([stopRecording(), splitRecorder.current?.stop()]);
+      splitRecorder.current = null;
+      setRecordingActive(false);
+      setRecordingEndsAt(null);
+    };
+    return {
+      active: recordingActive,
+      files: recordingFiles,
+      split: splitStatus,
+      video,
+      start: () => {
+        const current = configRef.current;
+        const { layout } = current.recording;
+        const run = async () => {
+          let directory = current.recording.directory;
+          if (layout !== "split") directory = await startRecording(current);
+          if (layout !== "separate") {
+            // Reticles are read live, so an adjustment during recording shows up in the file too.
+            const source = (id: CameraConfig["id"]): SplitSource | null => {
+              const canvas = document.querySelector<HTMLCanvasElement>(`canvas.video-canvas[data-camera="${id}"]`);
+              const latest = configRef.current;
+              const camera = latest.cameras.find((item) => item.id === id);
+              return canvas ? { canvas, reticles: latest.recording.splitReticles && camera ? camera.reticles : null } : null;
+            };
+            // Same order as on screen: after a swap CAM 02 is on the left.
+            const recorder = new SplitRecorder(
+              () => (swappedRef.current ? [source("camera2"), source("camera1")] : [source("camera1"), source("camera2")]),
+              {
+                directory,
+                title: current.productTitle,
+                camera1Name: moduleName(current, swappedRef.current ? "camera2" : "camera1"),
+                camera2Name: moduleName(current, swappedRef.current ? "camera1" : "camera2"),
+                utcOffsetMinutes: -new Date().getTimezoneOffset(),
+              },
+              current.recording.segmentMinutes,
+              (status) => {
+                setSplitStatus(status);
+                if (status.state === "error") notify(`Сплит-запись: ${status.message ?? "ошибка"}`, "error");
+              },
+            );
+            splitRecorder.current = recorder;
+            directory = await recorder.start();
+          }
+          return directory;
+        };
+        setRecordingFiles({});
+        setSplitStatus(null);
+        run()
+          .then((directory) => {
+            // Without a chosen directory the native side picked «Videos/MKIS100TEST»: remember it.
+            setConfig((latest) => (latest.recording.directory === directory ? latest : { ...latest, recording: { ...latest.recording, directory } }));
+            setRecordingActive(true);
+            const minutes = current.recording.stopAfterMinutes;
+            setRecordingEndsAt(minutes > 0 ? Date.now() + minutes * 60_000 : null);
+            notify(`Запись начата в ${directory}`);
+          })
+          .catch(async (error) => {
+            await stopAll();
+            notify(`Запись не начата: ${String(error)}`, "error");
+          });
+      },
+      stop: () => {
+        stopAll()
+          .then(() => notify("Запись остановлена"))
+          .catch((error) => notify(`Запись не остановлена: ${String(error)}`, "error"));
+      },
+      endsAt: recordingEndsAt,
+    };
+  }, [recordingActive, recordingFiles, splitStatus, video, notify, recordingEndsAt]);
+
+  // Auto-stop timer: ends the recording at the time chosen when it started.
+  const stopRecordingRef = useRef(recordingControl.stop);
+  stopRecordingRef.current = recordingControl.stop;
+  useEffect(() => {
+    if (!recordingActive || recordingEndsAt === null) return;
+    const timer = window.setTimeout(() => {
+      notify("Таймер записи истёк");
+      stopRecordingRef.current();
+    }, Math.max(0, recordingEndsAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [recordingActive, recordingEndsAt, notify]);
+
   const platformLabel = moduleName(config, "platform");
   const platformTarget = useMemo(
     () => ({ ip: config.platformIp, port: config.platformPort, label: platformLabel }),
@@ -304,6 +472,33 @@ export default function App() {
 
   const patchCamera = useCallback((id: CameraConfig["id"], patch: Partial<CameraConfig>) => {
     setConfig((current) => ({ ...current, cameras: current.cameras.map((camera) => (camera.id === id ? { ...camera, ...patch } : camera)) as [CameraConfig, CameraConfig] }));
+  }, []);
+
+  const onVideoStats = useCallback((id: CameraConfig["id"], stats: VideoStats) => {
+    setVideo((current) => ({ ...current, [id]: stats }));
+  }, []);
+
+  const [targets, setTargets] = useState<Record<CameraConfig["id"], TargetFix | null>>({ camera1: null, camera2: null });
+  const onTarget = useCallback((id: CameraConfig["id"], fix: TargetFix | null) => {
+    setTargets((current) => (current[id] === fix ? current : { ...current, [id]: fix }));
+  }, []);
+  // Since when both errors have been within tolerance; «СВЕДЕНО» needs it to last `stableMs`.
+  const withinSince = useRef<number | null>(null);
+  const alignment = useMemo<AlignmentView>(() => {
+    const { enabled, tolerancePx, stableMs } = config.alignment;
+    const optical = axisError(targets.camera1, config.cameras[0].reticles);
+    const reference = axisError(targets.camera2, config.cameras[1].reticles);
+    const inside = enabled && within(reference, tolerancePx) && within(optical, tolerancePx);
+    if (!inside) withinSince.current = null;
+    else withinSince.current ??= performance.now();
+    if (!enabled) return { state: "off", optical: null, reference: null };
+    if (!optical || !reference) return { state: "noTarget", optical, reference };
+    if (!within(reference, tolerancePx)) return { state: "reference", optical, reference };
+    const held = withinSince.current !== null && performance.now() - withinSince.current >= stableMs;
+    return { state: held ? "aligned" : "measuring", optical, reference };
+  }, [config.alignment, config.cameras, targets]);
+  const restartStream = useCallback((id: CameraConfig["id"]) => {
+    setRestartKeys((current) => ({ ...current, [id]: current[id] + 1 }));
   }, []);
 
   const recordTests = useCallback((records: TestRecord[]) => {
@@ -388,9 +583,34 @@ export default function App() {
   const [camera1, camera2] = config.cameras;
   const label1 = moduleName(config, "camera1");
   const label2 = moduleName(config, "camera2");
+  swappedRef.current = swapped;
   const left = swapped ? camera2 : camera1;
   const right = swapped ? camera1 : camera2;
   const dirty = savedSnapshot !== null && JSON.stringify(config) !== savedSnapshot;
+  // Streams open only once the stored config is loaded, so defaults never hit a camera first.
+  const streaming = (camera: CameraConfig) => savedSnapshot !== null && (streamOverride[camera.id] ?? camera.autoConnect);
+  const pane = (camera: CameraConfig) => (
+    // Keyed, so swapping the panes moves them instead of reopening both streams.
+    <VideoPane
+      key={camera.id}
+      camera={camera}
+      label={camera.id === "camera1" ? label1 : label2}
+      variant={camera.id === "camera1" ? "optical" : "thermal"}
+      jog={jog}
+      streaming={streaming(camera)}
+      restartKey={restartKeys[camera.id]}
+      video={video[camera.id]}
+      onVideoStats={onVideoStats}
+      measure={config.alignment.enabled}
+      onTarget={onTarget}
+    />
+  );
+  const drawerStream = (camera: CameraConfig) => ({
+    video: video[camera.id],
+    streaming: streaming(camera),
+    onStreamingChange: (on: boolean) => setStreamOverride((current) => ({ ...current, [camera.id]: on })),
+    onRestartStream: () => restartStream(camera.id),
+  });
   const toggleDrawer = (id: Exclude<Drawer, null>) => setDrawer((current) => (current === id ? null : id));
   const openSystem = (tab: SystemTab) => {
     setSystemTab(tab);
@@ -412,8 +632,8 @@ export default function App() {
           <button className={config.alignment.enabled ? "active" : ""} onClick={() => setConfig((current) => ({ ...current, alignment: { ...current.alignment, enabled: !current.alignment.enabled } }))} type="button" title="Режим сведения осей">
             <AlignCenter /> Сведение
           </button>
-          <button className={systemOpen && systemTab === "record" ? "active" : ""} onClick={() => openSystem("record")} type="button" title="Настройки записи">
-            <CircleDot /> Запись
+          <button className={`${systemOpen && systemTab === "record" ? "active" : ""} ${recordingActive ? "recording" : ""}`} onClick={() => openSystem("record")} type="button" title={recordingActive ? "Идёт запись" : "Настройки записи"}>
+            <CircleDot /> {recordingActive ? "REC" : "Запись"}{recordingActive && recordingEndsAt !== null && <Countdown endsAt={recordingEndsAt} />}
           </button>
           <button className={systemOpen ? "active" : ""} onClick={() => setSystemOpen((open) => !open)} type="button" title="Модули, поворотка, тесты, запись">
             <PanelTopOpen /> Система
@@ -447,6 +667,7 @@ export default function App() {
           onReport={() => void printReport()}
           jog={jog}
           rocking={rocking}
+          recording={recordingControl}
           notify={notify}
           onClose={() => setSystemOpen(false)}
         />
@@ -460,6 +681,7 @@ export default function App() {
             label={label1}
             otherLabel={label2}
             probe={probes.camera1}
+            {...drawerStream(camera1)}
             reticlesLinked={config.reticlesLinked}
             onClose={() => setDrawer(null)}
             onChange={(patch) => patchCamera("camera1", patch)}
@@ -470,7 +692,7 @@ export default function App() {
           />
         )}
         <div className="video-stage" ref={stageRef} style={{ "--split": `${split}%` } as CSSProperties}>
-          <VideoPane camera={left} label={left.id === "camera1" ? label1 : label2} variant={left.id === "camera1" ? "optical" : "thermal"} jog={jog} />
+          {pane(left)}
           <div className="split">
             <button className="split-grip" onPointerDown={beginSplitDrag} onDoubleClick={() => setSplit(50)} type="button" title="Перетащите · двойной клик — поровну">
               <GripVertical />
@@ -479,7 +701,7 @@ export default function App() {
               <ArrowLeftRight />
             </button>
           </div>
-          <VideoPane camera={right} label={right.id === "camera1" ? label1 : label2} variant={right.id === "camera1" ? "optical" : "thermal"} jog={jog} />
+          {pane(right)}
         </div>
         {drawer === "camera2" && (
           <CameraDrawer
@@ -488,6 +710,7 @@ export default function App() {
             label={label2}
             otherLabel={label1}
             probe={probes.camera2}
+            {...drawerStream(camera2)}
             reticlesLinked={config.reticlesLinked}
             onClose={() => setDrawer(null)}
             onChange={(patch) => patchCamera("camera2", patch)}
@@ -499,7 +722,7 @@ export default function App() {
         )}
       </div>
 
-      <StatusBar config={config} modules={modules} probes={probes} rocking={rocking} notice={notice} />
+      <StatusBar config={config} modules={modules} probes={probes} video={video} alignment={alignment} rocking={rocking} notice={notice} />
     </main>
     <PrintReport model={reportModel} />
     </>

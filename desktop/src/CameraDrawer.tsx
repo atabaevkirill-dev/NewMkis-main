@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff, RefreshCw, RotateCcw, Save, Trash2, X, Zap } from "lucide-react";
 import { cameraLensStep, getSecret, hasSecret, setSecret } from "./api";
-import { RETICLE_COLORS, RETICLE_LIMITS, RETICLE_STYLES, clamp, defaultReticles, isIPv4 } from "./config";
+import { RETICLE_COLORS, RETICLE_LIMITS, RETICLE_STYLES, clamp, defaultReticles, isIPv4, isStreamPath } from "./config";
 import { NumberField, Section, Toggle } from "./ui";
-import type { CameraConfig, Notify, ProbeResult, ReticleConfig, ReticleStyle } from "./types";
+import type { CameraConfig, Notify, ProbeResult, ReticleConfig, ReticleStyle, VideoStats } from "./types";
 
 type SectionId = "network" | "lens" | "reticle" | "display";
 const REVEAL_MS = 10_000;
 
-function SecretField({ cameraId, notify }: { cameraId: string; notify: Notify }) {
+function SecretField({ cameraId, notify, onStored }: { cameraId: string; notify: Notify; onStored: () => void }) {
   const [stored, setStored] = useState<boolean | null>(null);
   const [draft, setDraft] = useState("");
   const [visible, setVisible] = useState(false);
@@ -63,6 +63,7 @@ function SecretField({ cameraId, notify }: { cameraId: string; notify: Notify })
       setVisible(false);
       markRevealed(false);
       notify(password ? "Пароль сохранён в системной связке ключей" : "Пароль удалён из связки ключей");
+      onStored();
     } catch (error) {
       notify(`Связка ключей: ${String(error)}`, "error");
     }
@@ -196,12 +197,16 @@ function ReticleEditor({ reticles, onChange, linked, onLinkedChange, bothLabel }
   );
 }
 
-export function CameraDrawer({ camera, side, label, otherLabel, probe, reticlesLinked, onClose, onChange, onReticlesChange, onReticlesLinkedChange, onProbe, notify }: {
+export function CameraDrawer({ camera, side, label, otherLabel, probe, video, streaming, onStreamingChange, onRestartStream, reticlesLinked, onClose, onChange, onReticlesChange, onReticlesLinkedChange, onProbe, notify }: {
   camera: CameraConfig;
   side: "left" | "right";
   label: string;
   otherLabel: string;
   probe: ProbeResult | undefined;
+  video: VideoStats;
+  streaming: boolean;
+  onStreamingChange: (on: boolean) => void;
+  onRestartStream: () => void;
   reticlesLinked: boolean;
   onClose: () => void;
   onChange: (patch: Partial<CameraConfig>) => void;
@@ -214,7 +219,7 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, reticlesL
   const accent = side === "left" ? "blue" : "amber";
   const toggle = (id: SectionId) => setOpen((current) => (current === id ? null : id));
   const step = (mode: "zoom" | "focus", direction: 1 | -1) =>
-    void cameraLensStep(camera.id, mode, direction).catch((error) => notify(`${label} · ${String(error)}`, "error"));
+    void cameraLensStep(camera, mode, direction).catch((error) => notify(`${label} · ${String(error)}`, "error"));
   const enabledReticles = camera.reticles.filter((reticle) => reticle.enabled).length;
 
   return (
@@ -246,23 +251,34 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, reticlesL
               <span>Логин</span>
               <input value={camera.username} autoComplete="off" spellCheck={false} onChange={(event) => onChange({ username: event.target.value })} />
             </label>
-            <SecretField cameraId={camera.id} notify={notify} />
+            <SecretField cameraId={camera.id} notify={notify} onStored={onRestartStream} />
+            <label className={`field wide ${isStreamPath(camera.streamPath) ? "" : "invalid"}`}>
+              <span>Путь RTSP-потока</span>
+              <input value={camera.streamPath} spellCheck={false} placeholder="/media/video1" onChange={(event) => onChange({ streamPath: event.target.value.trim() })} />
+            </label>
           </div>
           <div className="row-actions">
             <button type="button" onClick={onProbe}>
               <RefreshCw /> Проверить связь
             </button>
-            <button type="button" disabled title="Декодирование RTSP ещё не подключено к новому клиенту">
-              <Zap /> Подключить
+            <button type="button" onClick={() => onStreamingChange(!streaming)} title={streaming ? "Остановить видеопоток" : "Открыть видеопоток"}>
+              <Zap /> {streaming ? "Отключить" : "Подключить"}
             </button>
           </div>
+          {streaming && (
+            <p className={`hint ${video.state === "error" ? "error" : ""}`} title={video.message}>
+              {video.state === "playing"
+                ? `Поток ${video.width ?? "—"}×${video.height ?? "—"} · ${video.fps ?? "—"} FPS · пропущено кадров: ${video.dropped}`
+                : video.state === "error" ? `Ошибка: ${video.message}` : "Подключение…"}
+            </p>
+          )}
           <div className="setting-line">
             <span>Автоподключение</span>
             <Toggle value={camera.autoConnect} onChange={(autoConnect) => onChange({ autoConnect })} />
           </div>
         </Section>
 
-        <Section title="Объектив · ONVIF" badge="не подключён" open={open === "lens"} onToggle={() => toggle("lens")}>
+        <Section title="Объектив · ONVIF" open={open === "lens"} onToggle={() => toggle("lens")}>
           <div className="lens-grid">
             <span>ZOOM</span>
             <button type="button" onClick={() => step("zoom", -1)}>−</button>
