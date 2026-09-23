@@ -33,7 +33,7 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
   const onTargetRef = useRef(onTarget);
   onTargetRef.current = onTarget;
   const [marker, setMarker] = useState<{ left: number; top: number } | null>(null);
-  const { id, ip, rtspPort, username, streamPath } = camera;
+  const { id, ip, rtspPort, onvifPort, username, streamPath, streamAuto } = camera;
 
   // Alignment: ~5 times a second find the hot target and report its sub-pixel position.
   useEffect(() => {
@@ -197,9 +197,10 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
       else if (event.state === "connecting") {
         // A reconnect is not a stutter: timing diagnostics start over with the new session.
         lastArrival = lastDraw = 0;
-        update({ state: "connecting", fps: null, message: "" });
+        // The message says where the stream is being looked for (e.g. the path found over ONVIF).
+        update({ state: "connecting", fps: null, message: event.message });
       }
-      else if (event.state === "playing") update({ state: "playing", message: "" });
+      else if (event.state === "playing") update({ state: "playing", message: event.message });
       else {
         closeDecoder();
         update({ state: "error", fps: null, message: event.message });
@@ -234,7 +235,7 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
       report(OFF_STATS);
     };
     // Only the connection fields reopen the stream; reticle or OSD edits must not.
-  }, [active, restartKey, id, ip, rtspPort, username, streamPath]);
+  }, [active, restartKey, id, ip, rtspPort, onvifPort, username, streamPath, streamAuto]);
 
   return (
     <>

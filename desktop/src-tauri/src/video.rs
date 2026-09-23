@@ -7,11 +7,12 @@
 //! - `2` frame: `u8 flags (bit 0 = key frame), i64 timestamp µs, access unit (4-byte length NALs)`
 //! - `3` state: `u8 state (0 connecting, 1 playing, 2 error), UTF-8 message`
 
+use crate::onvif::{resolve_stream, Lens, ResolveError};
 use crate::record::{CameraRecorder, RecordSettings, RecordingEvent, Source};
 use futures::StreamExt;
 use retina::client::{Credentials, PlayOptions, Session, SessionGroup, SessionOptions, SetupOptions};
 use retina::codec::{CodecItem, FrameFormat, ParametersRef, VideoParameters};
-use std::{collections::HashMap, sync::Arc, sync::Mutex, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, sync::Mutex, time::Duration};
 use tauri::{
     async_runtime::JoinHandle,
     ipc::{Channel, InvokeResponseBody},
@@ -55,13 +56,30 @@ pub struct Streams {
     recording: Arc<Mutex<Option<RecordSettings>>>,
 }
 
+/// Where a stream task connects.
+enum Target {
+    /// The operator's path.
+    Fixed(Url),
+    /// Asked from the camera over ONVIF before every connection, so a camera swapped in at the same
+    /// address is followed too; `fallback` (the operator's path, if any) serves when ONVIF cannot.
+    Onvif { ip: String, onvif: SocketAddr, fallback: Option<Url> },
+}
+
 /// Everything a stream task needs besides the UI channel.
 struct StreamContext {
     camera_id: String,
-    url: Url,
+    target: Target,
     creds: Option<Credentials>,
     recording: Arc<Mutex<Option<RecordSettings>>>,
     app: AppHandle,
+    lens: Arc<Lens>,
+}
+
+/// Why no URL could be found for this attempt.
+enum Unlocated {
+    /// ONVIF rejected the credentials: stop, like after an RTSP 401.
+    Auth(String),
+    Retry(String),
 }
 
 impl StreamContext {
@@ -73,7 +91,7 @@ impl StreamContext {
     }
 
     /// Starts, keeps or stops this camera's recorder so it matches the current request.
-    fn sync_recorder(&self, recorder: &mut Option<CameraRecorder>, clock_rate: u32) {
+    fn sync_recorder(&self, recorder: &mut Option<CameraRecorder>, url: &Url, clock_rate: u32) {
         let wanted = crate::lock(&self.recording).clone().filter(|settings| settings.includes(&self.camera_id));
         if recorder.as_ref().map(|current| &current.settings) == wanted.as_ref() {
             return;
@@ -82,7 +100,7 @@ impl StreamContext {
             self.emit(previous.finish());
         }
         *recorder = wanted.map(|settings| {
-            let source = Source { camera_id: self.camera_id.clone(), url: self.url.to_string() };
+            let source = Source { camera_id: self.camera_id.clone(), url: url.to_string() };
             CameraRecorder::new(settings, source, clock_rate)
         });
     }
@@ -114,18 +132,51 @@ fn validate_camera(camera_id: &str) -> Result<(), String> {
     }
 }
 
-/// Builds the stream URL without credentials: they are passed to the digest handshake separately.
-pub(crate) fn stream_url(ip: &str, port: u16, path: &str) -> Result<Url, String> {
-    let address = crate::validate_target(ip, port)?;
-    let valid_path = path.starts_with('/')
+/// Absolute, printable ASCII, no credentials or fragment: nothing can be smuggled into the URL.
+pub(crate) fn valid_stream_path(path: &str) -> bool {
+    path.starts_with('/')
         && path.len() <= 256
         && path
             .bytes()
-            .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'@' | b'\\' | b'#'));
-    if !valid_path {
+            .all(|byte| byte.is_ascii_graphic() && !matches!(byte, b'@' | b'\\' | b'#'))
+}
+
+/// Builds the stream URL without credentials: they are passed to the digest handshake separately.
+pub(crate) fn stream_url(ip: &str, port: u16, path: &str) -> Result<Url, String> {
+    let address = crate::validate_target(ip, port)?;
+    if !valid_stream_path(path) {
         return Err("Некорректный путь потока: ожидается вида /media/video1".into());
     }
     Url::parse(&format!("rtsp://{address}{path}")).map_err(|error| error.to_string())
+}
+
+/// The URL for this attempt, with a note for the operator on where it came from.
+async fn locate(context: &StreamContext) -> Result<(Url, String), Unlocated> {
+    let (ip, onvif, fallback) = match &context.target {
+        Target::Fixed(url) => return Ok((url.clone(), String::new())),
+        Target::Onvif { ip, onvif, fallback } => (ip, *onvif, fallback),
+    };
+    let (username, password) = context
+        .creds
+        .as_ref()
+        .map(|creds| (creds.username.clone(), creds.password.clone()))
+        .unwrap_or_default();
+    let (lens, camera_id) = (Arc::clone(&context.lens), context.camera_id.clone());
+    let resolved = crate::run_blocking(move || Ok(resolve_stream(&lens, &camera_id, onvif, &username, &password)))
+        .await
+        .map_err(Unlocated::Retry)?;
+    match resolved {
+        Ok(uri) => {
+            let url = stream_url(ip, uri.port, &uri.path).map_err(Unlocated::Retry)?;
+            let size = if uri.width > 0 { format!(" {}×{}", uri.width, uri.height) } else { String::new() };
+            Ok((url, format!("путь по ONVIF: {} · профиль {} {}{size}", uri.path, uri.profile, uri.encoding)))
+        }
+        Err(ResolveError::Auth(message)) => Err(Unlocated::Auth(message)),
+        Err(ResolveError::Other(message)) => match fallback {
+            Some(url) => Ok((url.clone(), format!("ONVIF не ответил ({message}), путь из настроек"))),
+            None => Err(Unlocated::Retry(format!("адрес потока по ONVIF не получен: {message}"))),
+        },
+    }
 }
 
 fn send(channel: &Channel<InvokeResponseBody>, bytes: Vec<u8>) -> Result<(), String> {
@@ -209,10 +260,11 @@ impl FrameTiming {
 
 async fn play(
     context: &StreamContext,
+    url: &Url,
+    note: &str,
     channel: &Channel<InvokeResponseBody>,
     recorder: &mut Option<CameraRecorder>,
 ) -> Result<(), String> {
-    let url = &context.url;
     let options = SessionOptions::default()
         .creds(context.creds.clone())
         .user_agent("MKIS100TEST".into())
@@ -275,7 +327,7 @@ async fn play(
             if !frame.is_random_access_point() {
                 continue;
             }
-            send_state(channel, STATE_PLAYING, "")?;
+            send_state(channel, STATE_PLAYING, note)?;
             eprintln!("[video] {url}: поток идёт");
             playing = true;
         }
@@ -285,7 +337,7 @@ async fn play(
         send(channel, frame_message(key, timestamp_us, frame.data()))?;
         timing.frame(url, frame.data().len(), sending.elapsed());
 
-        context.sync_recorder(recorder, clock_rate);
+        context.sync_recorder(recorder, url, clock_rate);
         if let (Some(active), Some(ParametersRef::Video(params))) = (recorder.as_mut(), demuxed.streams()[frame.stream_id()].parameters()) {
             if let Some(event) = active.push(params, key, frame.timestamp().elapsed(), frame.data()) {
                 context.emit(event);
@@ -295,15 +347,36 @@ async fn play(
 }
 
 async fn run(context: StreamContext, channel: Channel<InvokeResponseBody>) {
-    let url = context.url.clone();
     loop {
         if send_state(&channel, STATE_CONNECTING, "").is_err() {
             return;
         }
+        let (url, note) = match locate(&context).await {
+            Ok(located) => located,
+            Err(Unlocated::Auth(message)) => {
+                eprintln!("[video] {}: {message}", context.camera_id);
+                let _ = send_state(&channel, STATE_ERROR, &format!("{message} — повтор остановлен, чтобы камера не заблокировала учётную запись"));
+                return;
+            }
+            Err(Unlocated::Retry(message)) => {
+                eprintln!("[video] {}: {message}", context.camera_id);
+                if send_state(&channel, STATE_ERROR, &message).is_err() {
+                    return;
+                }
+                tokio::time::sleep(RETRY_DELAY).await;
+                continue;
+            }
+        };
+        if !note.is_empty() {
+            eprintln!("[video] {url}: {note}");
+            if send_state(&channel, STATE_CONNECTING, &note).is_err() {
+                return;
+            }
+        }
         eprintln!("[video] {url}: подключение");
         // A recording spans one RTSP session: timestamps restart with the next one, so does the file.
         let mut recorder = None;
-        let result = play(&context, &channel, &mut recorder).await;
+        let result = play(&context, &url, &note, &channel, &mut recorder).await;
         if let Some(active) = recorder.take() {
             context.emit(active.finish());
         }
@@ -326,20 +399,32 @@ async fn run(context: StreamContext, channel: Channel<InvokeResponseBody>) {
     }
 }
 
+/// Opens the camera's stream. With `auto` the path is asked from the camera over ONVIF (`path`, if
+/// set, is the fallback); otherwise `path` is used as given.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn camera_stream_start(
     app: AppHandle,
     streams: State<'_, Arc<Streams>>,
+    lens: State<'_, Arc<Lens>>,
     camera_id: String,
     ip: String,
     port: u16,
+    onvif_port: u16,
+    auto: bool,
     username: String,
     path: String,
     token: u64,
     channel: Channel<InvokeResponseBody>,
 ) -> Result<(), String> {
     validate_camera(&camera_id)?;
-    let url = stream_url(&ip, port, &path)?;
+    let target = if auto {
+        let onvif = crate::validate_target(&ip, onvif_port)?;
+        let fallback = if path.is_empty() { None } else { stream_url(&ip, port, &path).ok() };
+        Target::Onvif { ip, onvif, fallback }
+    } else {
+        Target::Fixed(stream_url(&ip, port, &path)?)
+    };
     if username.len() > 64 {
         return Err("Имя пользователя длиннее 64 символов".into());
     }
@@ -351,7 +436,14 @@ pub async fn camera_stream_start(
     })
     .await?;
     let creds = (!username.is_empty()).then_some(Credentials { username, password });
-    let context = StreamContext { camera_id: camera_id.clone(), url, creds, recording: Arc::clone(&streams.recording), app };
+    let context = StreamContext {
+        camera_id: camera_id.clone(),
+        target,
+        creds,
+        recording: Arc::clone(&streams.recording),
+        app,
+        lens: Arc::clone(lens.inner()),
+    };
     let task = tauri::async_runtime::spawn(run(context, channel));
     streams.start(&camera_id, token, task);
     Ok(())

@@ -78,6 +78,7 @@ export const isIPv4 = (value: string) =>
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(value.trim());
 export const isPort = (value: number) => Number.isInteger(value) && value >= 1 && value <= 65535;
 /** Mirrors the native check: absolute, printable ASCII, no credentials or fragment. */
+/** A path the native side accepts. Empty is valid only with `streamAuto` (no fallback). */
 export const isStreamPath = (value: string) => value.length <= 256 && /^\/[\x21-\x7e]*$/.test(value) && !/[@\\#]/.test(value);
 
 export function defaultReticles(): ReticleConfig[] {
@@ -90,15 +91,16 @@ export function defaultReticles(): ReticleConfig[] {
 
 export function createDefaultConfig(): AppConfig {
   const camera = (id: CameraConfig["id"], name: string, ip: string, streamPath: string, profile: string): CameraConfig => ({
-    id, name, ip, onvifPort: 80, rtspPort: 554, streamPath, username: "admin", profile, autoConnect: true, osd: false, zoomStepPercent: 0.1, focusStepPercent: 2, reticles: defaultReticles(),
+    id, name, ip, onvifPort: 80, rtspPort: 554, streamAuto: true, streamPath, username: "admin", profile, autoConnect: true, osd: false, zoomStepPercent: 0.1, focusStepPercent: 2, reticles: defaultReticles(),
   });
   return {
     schemaVersion: SCHEMA_VERSION,
     productTitle: "",
-    // CAM 01 is a Uniview UV-ZNH2130M (main stream /media/video1); CAM 02 is an analogue thermal camera behind a Beward B102S.
+    // Stream paths come from the cameras over ONVIF; a stored path is only the fallback. CAM 01 is a Uniview
+    // UV-ZNH2130M; CAM 02 is whichever thermal camera is fitted (192.168.1.108 is the Dahua-family factory address).
     cameras: [
       camera("camera1", "CAM 01 · OPTICAL", "192.168.1.68", "/media/video1", "PROFILE_1"),
-      camera("camera2", "CAM 02 · THERMAL", "192.168.1.99", "/av0_0", "THERMAL_1"),
+      camera("camera2", "CAM 02 · THERMAL", "192.168.1.108", "", "THERMAL_1"),
     ],
     platformIp: "192.168.1.115",
     platformPort: 9760,

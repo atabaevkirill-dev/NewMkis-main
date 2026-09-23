@@ -4,8 +4,8 @@
 //! Zoom goes to an absolute target accumulated here when the camera reports its zoom position (see
 //! `absolute_zoom`). Otherwise a step is an exact relative move when the camera advertises one (PTZ
 //! `RelativeZoomTranslationSpace`, Imaging `MoveOptions/Relative`), else a short continuous move
-//! stopped after a length proportional to the step. A pulse never outlives its call; a watchdog stops any move whose stop
-//! failed, so the lens can never be left driving to its end stop.
+//! stopped after a length proportional to the step. A pulse never outlives its call; a watchdog
+//! stops any move whose stop failed, so the lens can never be left driving to its end stop.
 //!
 //! Requests go over a plain TCP socket on purpose: system HTTP proxies (VPN clients) must not
 //! intercept camera traffic. Authentication is WS-Security UsernameToken (password digest); the
@@ -49,7 +49,7 @@ const NS_SCHEMA: &str = "http://www.onvif.org/ver10/schema";
 // ---------------------------------------------------------------- minimal XML helpers
 
 /// Finds start tags by local name (namespace prefixes ignored); returns (attributes, text after the tag).
-fn elements<'a>(xml: &'a str, local: &str) -> Vec<(&'a str, &'a str)> {
+pub(crate) fn elements<'a>(xml: &'a str, local: &str) -> Vec<(&'a str, &'a str)> {
     let mut found = Vec::new();
     let mut rest = xml;
     while let Some(start) = rest.find('<') {
@@ -71,14 +71,14 @@ fn elements<'a>(xml: &'a str, local: &str) -> Vec<(&'a str, &'a str)> {
     found
 }
 
-fn first_text(xml: &str, local: &str) -> Option<String> {
+pub(crate) fn first_text(xml: &str, local: &str) -> Option<String> {
     elements(xml, local)
         .first()
         .map(|(_, text)| unescape(text.trim()))
         .filter(|text| !text.is_empty())
 }
 
-fn attribute(attrs: &str, name: &str) -> Option<String> {
+pub(crate) fn attribute(attrs: &str, name: &str) -> Option<String> {
     let needle = format!("{name}=\"");
     let start = attrs.find(&needle)? + needle.len();
     let end = attrs[start..].find('"')? + start;
@@ -86,7 +86,7 @@ fn attribute(attrs: &str, name: &str) -> Option<String> {
 }
 
 /// The section of `xml` from the first `local` start tag onwards.
-fn section<'a>(xml: &'a str, local: &str) -> Option<&'a str> {
+pub(crate) fn section<'a>(xml: &'a str, local: &str) -> Option<&'a str> {
     let (attrs, _) = elements(xml, local).into_iter().next()?;
     let offset = attrs.as_ptr() as usize - xml.as_ptr() as usize;
     Some(&xml[offset..])
@@ -215,6 +215,8 @@ fn dechunk(body: &[u8]) -> Vec<u8> {
 enum SoapError {
     /// The camera rejected the credentials (or the timestamp).
     Unauthorized(String),
+    /// No HTTP answer at all: nothing listens there, or it stopped answering.
+    Unreachable(String),
     Other(String),
 }
 
@@ -222,7 +224,7 @@ impl SoapError {
     fn message(&self) -> String {
         match self {
             SoapError::Unauthorized(detail) => format!("неверный логин или пароль ONVIF ({detail})"),
-            SoapError::Other(detail) => detail.clone(),
+            SoapError::Unreachable(detail) | SoapError::Other(detail) => detail.clone(),
         }
     }
 }
@@ -299,7 +301,7 @@ fn soap(address: SocketAddr, path: &str, auth: Option<(&Credentials, i64)>, body
     let envelope = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\">{header}<s:Body>{body}</s:Body></s:Envelope>"
     );
-    let (status, text) = post(address, path, &envelope).map_err(SoapError::Other)?;
+    let (status, text) = post(address, path, &envelope).map_err(SoapError::Unreachable)?;
     if status == 200 && !text.contains(":Fault>") {
         return Ok(text);
     }
@@ -320,7 +322,10 @@ struct Device {
     clock_offset: i64,
     ptz_path: Option<String>,
     imaging_path: Option<String>,
+    media_path: String,
+    /// First media profile: the one PTZ commands address.
     profile: String,
+    profiles: Vec<MediaProfile>,
     source: Option<String>,
     /// Absolute zoom position range, when the camera also reports its zoom position (preferred).
     zoom_absolute: Option<(f64, f64)>,
@@ -330,6 +335,81 @@ struct Device {
     zoom_range: Option<(f64, f64)>,
     /// Relative focus distance range of the Imaging service; `None` means steps are timed pulses.
     focus_range: Option<(f64, f64)>,
+}
+
+/// A media profile, as far as choosing a stream needs it.
+#[derive(Clone, Debug, PartialEq)]
+struct MediaProfile {
+    token: String,
+    name: String,
+    /// `H264`, `JPEG`, `MPEG4`… as the camera names it; empty when the profile has no encoder.
+    encoding: String,
+    width: u32,
+    height: u32,
+}
+
+/// Each `local` element with everything up to the next one (the last runs to the end).
+fn blocks<'a>(xml: &'a str, local: &str) -> Vec<&'a str> {
+    let starts: Vec<usize> = elements(xml, local)
+        .into_iter()
+        .map(|(attrs, _)| attrs.as_ptr() as usize - xml.as_ptr() as usize)
+        .collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, &start)| &xml[start..starts.get(index + 1).copied().unwrap_or(xml.len())])
+        .collect()
+}
+
+fn media_profiles(xml: &str) -> Vec<MediaProfile> {
+    blocks(xml, "Profiles")
+        .into_iter()
+        .filter_map(|block| {
+            let token = attribute(block, "token")?;
+            let encoder = section(block, "VideoEncoderConfiguration");
+            let resolution = encoder.and_then(|part| section(part, "Resolution"));
+            let size = |name: &str| resolution.and_then(|part| first_text(part, name)).and_then(|value| value.parse().ok()).unwrap_or(0);
+            Some(MediaProfile {
+                token,
+                name: first_text(block, "Name").unwrap_or_default(),
+                encoding: encoder.and_then(|part| first_text(part, "Encoding")).unwrap_or_default(),
+                width: size("Width"),
+                height: size("Height"),
+            })
+        })
+        .collect()
+}
+
+/// The profile to stream: the first H.264 one (the webview decodes H.264 everywhere), else the first.
+fn stream_profile(profiles: &[MediaProfile]) -> Option<&MediaProfile> {
+    let h264 = |profile: &&MediaProfile| profile.encoding.to_ascii_uppercase().replace('.', "") == "H264";
+    profiles.iter().find(h264).or_else(|| profiles.first())
+}
+
+/// Where the camera streams, as returned by `GetStreamUri`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StreamUri {
+    pub port: u16,
+    /// Path and query, e.g. `/cam/realmonitor?channel=1&subtype=0`.
+    pub path: String,
+    pub profile: String,
+    pub encoding: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Port and path of an RTSP URI. The host is ignored: cameras often report a stale or internal
+/// address, while the operator's address is known to work.
+fn parse_stream_uri(uri: &str) -> Option<(u16, String)> {
+    let url = url::Url::parse(uri).ok()?;
+    if !url.scheme().eq_ignore_ascii_case("rtsp") {
+        return None;
+    }
+    let path = match url.query() {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    };
+    crate::video::valid_stream_path(&path).then(|| (url.port().unwrap_or(554), path))
 }
 
 /// Next absolute zoom target: `steps` of `percent` of the range from `current`, inside the range.
@@ -373,7 +453,12 @@ impl Device {
     fn connect(address: SocketAddr, creds: Credentials) -> Result<Device, SoapError> {
         const DEVICE: &str = "/onvif/device_service";
         let now = now_unix();
-        let time = soap(address, DEVICE, None, &format!("<GetSystemDateAndTime xmlns=\"{NS_DEVICE}\"/>")).ok();
+        let time = match soap(address, DEVICE, None, &format!("<GetSystemDateAndTime xmlns=\"{NS_DEVICE}\"/>")) {
+            Ok(xml) => Some(xml),
+            // Nothing answers there: every further request would only wait out the same timeout.
+            Err(error @ SoapError::Unreachable(_)) => return Err(error),
+            Err(_) => None,
+        };
         // Candidates for the WS-Security clock: camera UTC, camera local time, this PC.
         let mut offsets: Vec<i64> = time
             .iter()
@@ -404,19 +489,22 @@ impl Device {
             clock_offset,
             ptz_path: xaddr_path(&capabilities, "PTZ"),
             imaging_path: xaddr_path(&capabilities, "Imaging"),
+            media_path,
             profile: String::new(),
+            profiles: Vec::new(),
             source: None,
             zoom_absolute: None,
             zoom_target: None,
             zoom_range: None,
             focus_range: None,
         };
-        let profiles = device.call(&media_path, &format!("<GetProfiles xmlns=\"{NS_MEDIA}\"/>"))?;
-        let (attrs, _) = elements(&profiles, "Profiles")
-            .into_iter()
-            .next()
+        let profiles = device.call(&device.media_path, &format!("<GetProfiles xmlns=\"{NS_MEDIA}\"/>"))?;
+        device.profiles = media_profiles(&profiles);
+        device.profile = device
+            .profiles
+            .first()
+            .map(|profile| profile.token.clone())
             .ok_or_else(|| SoapError::Other("камера не вернула профилей ONVIF".into()))?;
-        device.profile = attribute(attrs, "token").ok_or_else(|| SoapError::Other("профиль ONVIF без token".into()))?;
         device.source = section(&profiles, "VideoSourceConfiguration").and_then(|part| first_text(part, "SourceToken"));
         // Optional: a camera that cannot answer these still zooms and focuses with timed pulses.
         if let Some(ptz) = device.ptz_path.clone() {
@@ -433,6 +521,35 @@ impl Device {
                 .and_then(|xml| move_range(&xml, "Relative", "Distance"));
         }
         Ok(device)
+    }
+
+    /// Stream address of the profile to stream (`GetStreamUri`, unicast RTSP).
+    fn stream_uri(&self) -> Result<StreamUri, SoapError> {
+        let profile = stream_profile(&self.profiles).ok_or_else(|| SoapError::Other("камера не вернула профилей ONVIF".into()))?;
+        let xml = self.call(
+            &self.media_path,
+            &format!(
+                concat!(
+                    "<GetStreamUri xmlns=\"{}\"><StreamSetup><Stream xmlns=\"{}\">RTP-Unicast</Stream>",
+                    "<Transport xmlns=\"{}\"><Protocol>RTSP</Protocol></Transport></StreamSetup>",
+                    "<ProfileToken>{}</ProfileToken></GetStreamUri>"
+                ),
+                NS_MEDIA,
+                NS_SCHEMA,
+                NS_SCHEMA,
+                escape(&profile.token)
+            ),
+        )?;
+        let uri = first_text(&xml, "Uri").ok_or_else(|| SoapError::Other("камера не вернула адрес потока".into()))?;
+        let (port, path) = parse_stream_uri(&uri).ok_or_else(|| SoapError::Other(format!("непригодный адрес потока: {uri}")))?;
+        Ok(StreamUri {
+            port,
+            path,
+            profile: if profile.name.is_empty() { profile.token.clone() } else { profile.name.clone() },
+            encoding: profile.encoding.clone(),
+            width: profile.width,
+            height: profile.height,
+        })
     }
 
     /// Current zoom position from PTZ `GetStatus`.
@@ -612,21 +729,20 @@ pub fn spawn_lens_watchdog(lens: Arc<Lens>) {
     });
 }
 
-#[allow(clippy::too_many_arguments)]
-fn step(lens: &Lens, camera_id: &str, address: SocketAddr, username: String, password: String, mode: Mode, steps: i32, percent: f64) -> Result<(), String> {
-    let camera = lens.camera(camera_id);
-    let mut state = crate::lock(&camera);
-    let target = (address, username.clone());
+/// Makes sure `state` holds a session with the camera at `address` for these credentials. Lens steps
+/// and stream lookups share it, and with it the guard against retrying a rejected password.
+fn ensure_device(state: &mut CameraLens, address: SocketAddr, username: &str, password: &str) -> Result<(), SoapError> {
+    let target = (address, username.to_string());
     if state.target.as_ref() != Some(&target) || state.device.as_ref().is_some_and(|device| device.creds.password != password) {
         state.stop_motion();
         state.device = None;
         state.target = Some(target);
     }
-    if state.rejected_password.as_deref() == Some(password.as_str()) {
-        return Err("неверный логин или пароль ONVIF — сохраните верный пароль камеры".into());
+    if state.rejected_password.as_deref() == Some(password) {
+        return Err(SoapError::Unauthorized("сохраните верный пароль камеры".into()));
     }
     if state.device.is_none() {
-        match Device::connect(address, Credentials { username, password: password.clone() }) {
+        match Device::connect(address, Credentials { username: username.to_string(), password: password.to_string() }) {
             Ok(device) => {
                 let describe = |range: Option<(f64, f64)>| range.map_or("импульсами".to_string(), |(min, max)| format!("относительно {min}..{max}"));
                 let zoom = device.zoom_absolute.map_or_else(|| describe(device.zoom_range), |(min, max)| format!("по положению {min}..{max}"));
@@ -642,12 +758,52 @@ fn step(lens: &Lens, camera_id: &str, address: SocketAddr, username: String, pas
             }
             Err(error) => {
                 if matches!(error, SoapError::Unauthorized(_)) {
-                    state.rejected_password = Some(password);
+                    state.rejected_password = Some(password.to_string());
                 }
-                return Err(error.message());
+                return Err(error);
             }
         }
     }
+    Ok(())
+}
+
+pub(crate) enum ResolveError {
+    /// The camera rejected the credentials: retrying would lock the account.
+    Auth(String),
+    Other(String),
+}
+
+/// Asks the camera where it streams (`GetStreamUri`), preferring an H.264 profile.
+pub(crate) fn resolve_stream(lens: &Lens, camera_id: &str, address: SocketAddr, username: &str, password: &str) -> Result<StreamUri, ResolveError> {
+    let camera = lens.camera(camera_id);
+    let mut state = crate::lock(&camera);
+    // The cached session may belong to a camera since replaced at the same address: its profile
+    // tokens are then unknown to the new one. One fresh session settles that.
+    for fresh in [false, true] {
+        if fresh {
+            state.stop_motion();
+            state.device = None;
+        }
+        let result = ensure_device(&mut state, address, username, password).and_then(|()| {
+            state.device.as_ref().ok_or_else(|| SoapError::Other("нет соединения ONVIF".into()))?.stream_uri()
+        });
+        match result {
+            Ok(uri) => return Ok(uri),
+            Err(error @ SoapError::Unauthorized(_)) => return Err(ResolveError::Auth(error.message())),
+            // A fresh session cannot help a camera that does not answer at all.
+            Err(error @ SoapError::Unreachable(_)) => return Err(ResolveError::Other(error.message())),
+            Err(error) if fresh => return Err(ResolveError::Other(error.message())),
+            Err(_) => {}
+        }
+    }
+    unreachable!("the fresh attempt always returns")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn step(lens: &Lens, camera_id: &str, address: SocketAddr, username: String, password: String, mode: Mode, steps: i32, percent: f64) -> Result<(), String> {
+    let camera = lens.camera(camera_id);
+    let mut state = crate::lock(&camera);
+    ensure_device(&mut state, address, &username, &password).map_err(|error| error.message())?;
     state.stop_motion();
 
     let device = state.device.as_mut().ok_or("нет соединения ONVIF")?;
@@ -805,6 +961,31 @@ mod tests {
     }
 
     #[test]
+    fn stream_profile_prefers_h264_and_the_uri_keeps_path_and_query() {
+        let response = r#"<trt:GetProfilesResponse>
+            <trt:Profiles token="MainStream" fixed="true"><tt:Name>Main</tt:Name>
+              <tt:VideoSourceConfiguration token="vs"><tt:Name>vs</tt:Name><tt:SourceToken>src</tt:SourceToken></tt:VideoSourceConfiguration>
+              <tt:VideoEncoderConfiguration token="ve0"><tt:Name>e0</tt:Name><tt:Encoding>H265</tt:Encoding>
+                <tt:Resolution><tt:Width>1920</tt:Width><tt:Height>1080</tt:Height></tt:Resolution></tt:VideoEncoderConfiguration></trt:Profiles>
+            <trt:Profiles token="SubStream"><tt:Name>Sub</tt:Name>
+              <tt:VideoEncoderConfiguration token="ve1"><tt:Encoding>H264</tt:Encoding>
+                <tt:Resolution><tt:Width>640</tt:Width><tt:Height>512</tt:Height></tt:Resolution></tt:VideoEncoderConfiguration></trt:Profiles>
+            </trt:GetProfilesResponse>"#;
+        let profiles = media_profiles(response);
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(profiles[0], MediaProfile { token: "MainStream".into(), name: "Main".into(), encoding: "H265".into(), width: 1920, height: 1080 });
+        // The webview cannot decode H.265 everywhere: the H.264 sub stream wins.
+        assert_eq!(stream_profile(&profiles).map(|profile| profile.token.as_str()), Some("SubStream"));
+        assert_eq!(stream_profile(&profiles[..1]).map(|profile| profile.token.as_str()), Some("MainStream"));
+
+        let dahua = "rtsp://192.168.1.108:554/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif";
+        assert_eq!(parse_stream_uri(dahua), Some((554, "/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif".into())));
+        assert_eq!(parse_stream_uri("rtsp://10.0.0.1/av0_0"), Some((554, "/av0_0".into())));
+        assert_eq!(parse_stream_uri("rtsp://admin:secret@10.0.0.1:8554/live"), Some((8554, "/live".into())));
+        assert_eq!(parse_stream_uri("http://10.0.0.1/snapshot.jpg"), None);
+    }
+
+    #[test]
     fn absolute_target_accumulates_tiny_steps_both_ways_alike() {
         // 0.01 % steps are far below a camera grid cell: three forward and three back return exactly.
         let mut target = 0.072121;
@@ -886,6 +1067,11 @@ mod tests {
             device.zoom_range,
             device.focus_range
         );
+        for profile in &device.profiles {
+            println!("  профиль {profile:?}");
+        }
+        let started = Instant::now();
+        println!("GetStreamUri — {:?}: {:?}", started.elapsed(), device.stream_uri().map_err(|error| error.message()));
         let ptz = device.ptz_path.clone().unwrap();
         for body in [
             format!("<GetNodes xmlns=\"{NS_PTZ}\"/>"),

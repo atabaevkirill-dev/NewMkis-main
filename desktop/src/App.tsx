@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { AlignCenter, ArrowLeftRight, CircleDot, Crosshair, GripVertical, PanelTopOpen, Pencil, Radio, Save, SlidersHorizontal, Square } from "lucide-react";
 import { version } from "../package.json";
-import { inTauri, loadConfig, onRecordingState, onRockingState, persistConfig, printPage, probeModules, startRecording, stopRecording } from "./api";
+import { discoverCameras, inTauri, loadConfig, onRecordingState, onRockingState, persistConfig, printPage, probeModules, startRecording, stopRecording } from "./api";
 import { lensStep } from "./lens";
 import { CameraDrawer } from "./CameraDrawer";
 import { MAX_TITLE_LENGTH, OFF_STATS, createDefaultConfig, listModules, moduleName } from "./config";
@@ -12,7 +12,7 @@ import { ReticleLayer } from "./Reticle";
 import { buildReport, reportFileStamp, testKey } from "./report";
 import { SystemDrawer, type SystemTab } from "./SystemDrawer";
 import { useJog, type JogControl } from "./useJog";
-import type { AppConfig, CameraConfig, ModuleView, Notify, ProbeResult, RecordingEvent, ReticleConfig, RockingEvent, TestRecord, VideoStats } from "./types";
+import type { AppConfig, CameraConfig, FoundCamera, ModuleView, Notify, ProbeResult, RecordingEvent, ReticleConfig, RockingEvent, TestRecord, VideoStats } from "./types";
 import { VideoSurface } from "./VideoSurface";
 import { Countdown } from "./ui";
 import { SplitRecorder, type SplitSource, type SplitStatus } from "./splitRecorder";
@@ -23,6 +23,8 @@ type Notice = { text: string; tone: "info" | "error" };
 
 const PROBE_INTERVAL_MS = 5000;
 const NOTICE_MS = 5000;
+/** A camera in error looks for a replacement in the network at most this often. */
+const REPLACE_SEARCH_MS = 20_000;
 /** A wheel event this large is one notch (Chromium on Windows reports 100 px per notch). */
 const NOTCH_DELTA = 30;
 /** Small deltas (touchpad) that add up to one step. */
@@ -110,7 +112,7 @@ const VideoPane = memo(function VideoPane({ camera, label, variant, jog, streami
         <div className={`stream-state ${video.state}`} title={video.message}>
           <Radio />
           <span>{video.state === "connecting" ? "Подключение…" : video.state === "error" ? video.message || "Ошибка потока" : "Нет потока"}</span>
-          <code>RTSP {camera.ip}:{camera.rtspPort}{camera.streamPath}</code>
+          <code>{camera.streamAuto ? `RTSP ${camera.ip} · путь по ONVIF` : `RTSP ${camera.ip}:${camera.rtspPort}${camera.streamPath}`}</code>
         </div>
       )}
     </div>
@@ -259,6 +261,11 @@ export default function App() {
   // Operator override of «Автоподключение» for this session; unset follows the config.
   const [streamOverride, setStreamOverride] = useState<Partial<Record<CameraConfig["id"], boolean>>>({});
   const [restartKeys, setRestartKeys] = useState<Record<CameraConfig["id"], number>>({ camera1: 0, camera2: 0 });
+  /** ONVIF cameras found in the network (null until the first search ends). */
+  const [found, setFound] = useState<FoundCamera[] | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const discovery = useRef<Promise<FoundCamera[]> | null>(null);
+  const lastReplaceSearch = useRef<Record<CameraConfig["id"], number>>({ camera1: 0, camera2: 0 });
   const [recordingActive, setRecordingActive] = useState(false);
   /** When the auto-stop timer ends the recording (epoch ms), or null for a manual stop. */
   const [recordingEndsAt, setRecordingEndsAt] = useState<number | null>(null);
@@ -485,9 +492,95 @@ export default function App() {
     setConfig((current) => ({ ...current, cameras: current.cameras.map((camera) => (camera.id === id ? { ...camera, ...patch } : camera)) as [CameraConfig, CameraConfig] }));
   }, []);
 
+  /** One search at a time: callers arriving meanwhile share its result. */
+  const discover = useCallback((): Promise<FoundCamera[]> => {
+    if (discovery.current) return discovery.current;
+    setDiscovering(true);
+    const search = discoverCameras()
+      .then((list) => {
+        setFound(list);
+        return list;
+      })
+      .finally(() => {
+        discovery.current = null;
+        setDiscovering(false);
+      });
+    discovery.current = search;
+    return search;
+  }, []);
+
+  const savedRef = useRef(savedSnapshot);
+  savedRef.current = savedSnapshot;
+  /** Puts a found camera into a slot and saves just that change: other unsaved edits stay unsaved. */
+  const adoptCamera = useCallback(async (id: CameraConfig["id"], camera: FoundCamera) => {
+    // The fallback path belonged to the previous camera; the new one names its own over ONVIF.
+    const patch: Partial<CameraConfig> = { ip: camera.ip, onvifPort: camera.port, streamAuto: true, streamPath: "" };
+    patchCamera(id, patch);
+    const saved = savedRef.current;
+    if (saved === null) return;
+    const stored = JSON.parse(saved) as AppConfig;
+    stored.cameras = stored.cameras.map((item) => (item.id === id ? { ...item, ...patch } : item)) as AppConfig["cameras"];
+    try {
+      await persistConfig(stored);
+      setSavedSnapshot(JSON.stringify(stored));
+    } catch (error) {
+      notify(`Конфигурация не сохранена: ${String(error)}`, "error");
+    }
+  }, [notify, patchCamera]);
+
+  /**
+   * A camera that stopped answering is replaced by the one new ONVIF camera in the network, so a
+   * different thermal camera fitted to the stand connects by itself. Anything ambiguous is left to
+   * the operator: several candidates, a camera in another subnet, an address that still answers.
+   */
+  const findReplacement = useCallback(async (id: CameraConfig["id"]) => {
+    const current = configRef.current;
+    const camera = current.cameras.find((item) => item.id === id);
+    const other = current.cameras.find((item) => item.id !== id);
+    if (!camera || !other) return;
+    const label = moduleName(current, id);
+    const list = await discover().catch(() => null);
+    // Still there: the error is the password, the path or the stream, not the address.
+    if (!list || list.some((item) => item.ip === camera.ip)) return;
+    // Cameras with discovery switched off do not answer it: an address that accepts connections stays.
+    const [reach] = await probeModules([{ id, ip: camera.ip, port: camera.onvifPort }]).catch(() => []);
+    if (reach?.connected) return;
+    const candidates = list.filter((item) => !item.otherSubnet && item.ip !== other.ip);
+    if (candidates.length === 1) {
+      const [next] = candidates;
+      notify(`${label}: ${camera.ip} не отвечает — подключаю найденную камеру ${next.ip} (${next.hardware || next.name || "ONVIF"})`);
+      await adoptCamera(id, next);
+    } else if (candidates.length > 1) {
+      notify(`${label}: ${camera.ip} не отвечает, найдено камер: ${candidates.length} — выберите нужную в настройках ${label}`, "error");
+    } else {
+      const far = list.find((item) => item.otherSubnet);
+      if (far) notify(`${label}: камера ${far.ip} найдена в другой подсети — задайте ей адрес из сети этого ПК`, "error");
+    }
+  }, [adoptCamera, discover, notify]);
+
   const onVideoStats = useCallback((id: CameraConfig["id"], stats: VideoStats) => {
     setVideo((current) => ({ ...current, [id]: stats }));
   }, []);
+
+  // First search as soon as the stored config is in, so the camera drawers can offer it right away.
+  const loaded = savedSnapshot !== null;
+  useEffect(() => {
+    if (loaded) void discover().catch(() => undefined);
+  }, [loaded, discover]);
+
+  // A stream in error looks for a replacement camera, at most every REPLACE_SEARCH_MS per camera.
+  useEffect(() => {
+    for (const camera of config.cameras) {
+      const stats = video[camera.id];
+      const active = loaded && (streamOverride[camera.id] ?? camera.autoConnect);
+      // A rejected password means the camera is there: another address would not help.
+      if (!active || stats.state !== "error" || stats.message.includes("пароль")) continue;
+      const now = Date.now();
+      if (now - lastReplaceSearch.current[camera.id] < REPLACE_SEARCH_MS) continue;
+      lastReplaceSearch.current[camera.id] = now;
+      void findReplacement(camera.id);
+    }
+  }, [config.cameras, video, loaded, streamOverride, findReplacement]);
 
   const [targets, setTargets] = useState<Record<CameraConfig["id"], TargetFix | null>>({ camera1: null, camera2: null });
   const onTarget = useCallback((id: CameraConfig["id"], fix: TargetFix | null) => {
@@ -621,6 +714,11 @@ export default function App() {
     streaming: streaming(camera),
     onStreamingChange: (on: boolean) => setStreamOverride((current) => ({ ...current, [camera.id]: on })),
     onRestartStream: () => restartStream(camera.id),
+    found,
+    discovering,
+    onDiscover: () => void discover().catch((error) => notify(`Поиск камер: ${String(error)}`, "error")),
+    onPick: (item: FoundCamera) => void adoptCamera(camera.id, item),
+    otherIp: config.cameras.find((item) => item.id !== camera.id)?.ip ?? "",
   });
   const toggleDrawer = (id: Exclude<Drawer, null>) => setDrawer((current) => (current === id ? null : id));
   const openSystem = (tab: SystemTab) => {

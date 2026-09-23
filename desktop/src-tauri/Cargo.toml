@@ -1,6 +1,6 @@
 [package]
 name = "oncam-desktop"
-version = "0.2.2"
+version = "0.2.3"
 description = "MKIS100TEST axis alignment workstation"
 authors = ["ONCAM"]
 edition = "2021"
@@ -24,6 +24,8 @@ tokio = { version = "1", features = ["time"] }
 sha1 = "0.10"
 base64 = "0.22"
 rand = "0.8"
+socket2 = "0.6"
+if-addrs = "0.15"
 
 # keyring 3 has no default credential store: without a platform feature it silently
 # falls back to an in-memory mock and passwords are never persisted.

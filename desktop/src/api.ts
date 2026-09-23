@@ -2,7 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { createDefaultConfig, migrateConfig, moduleName } from "./config";
-import type { AppConfig, CameraConfig, ProbeResult, ProbeTarget, RecordingEvent, RockingEvent, RockingProfile, StreamEvent } from "./types";
+import type { AppConfig, CameraConfig, FoundCamera, ProbeResult, ProbeTarget, RecordingEvent, RockingEvent, RockingProfile, StreamEvent } from "./types";
 
 export type JogDirection = "left" | "right" | "up" | "down";
 
@@ -145,6 +145,12 @@ function parseStreamMessage(buffer: ArrayBuffer): StreamEvent | null {
   return null;
 }
 
+/** ONVIF cameras answering WS-Discovery on every local network, sorted by address (about 2.5 s). */
+export async function discoverCameras(): Promise<FoundCamera[]> {
+  if (!inTauri()) return [];
+  return invoke<FoundCamera[]>("discover_cameras");
+}
+
 /**
  * Opens the camera's RTSP stream on the native side (password comes from the keychain there) and
  * delivers encoded frames. The returned function stops exactly this stream, even if called early.
@@ -157,7 +163,8 @@ export function startCameraStream(camera: CameraConfig, onEvent: (event: StreamE
     if (event) onEvent(event);
   });
   const started = invoke<void>("camera_stream_start", {
-    cameraId: camera.id, ip: camera.ip, port: camera.rtspPort, username: camera.username, path: camera.streamPath, token, channel,
+    cameraId: camera.id, ip: camera.ip, port: camera.rtspPort, onvifPort: camera.onvifPort, auto: camera.streamAuto,
+    username: camera.username, path: camera.streamPath, token, channel,
   });
   const stop = () => {
     // Wait for the start to land first, otherwise the stop could arrive before the task exists.

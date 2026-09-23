@@ -15,6 +15,17 @@ export interface ModuleView extends DeviceModule {
   hidden: boolean;
 }
 
+/** An ONVIF camera that answered WS-Discovery. */
+export interface FoundCamera {
+  ip: string;
+  /** ONVIF (HTTP) port. */
+  port: number;
+  name: string;
+  hardware: string;
+  /** Outside every subnet of this PC: it cannot be connected to until readdressed. */
+  otherSubnet: boolean;
+}
+
 export interface ProbeTarget {
   id: string;
   ip: string;
@@ -65,7 +76,9 @@ export interface CameraConfig {
   ip: string;
   onvifPort: number;
   rtspPort: number;
-  /** RTSP path after host:port, e.g. `/media/video1` (Uniview main stream). */
+  /** Ask the camera for its stream address over ONVIF (`GetStreamUri`) before every connection. */
+  streamAuto: boolean;
+  /** RTSP path after host:port, e.g. `/media/video1`: used as given without `streamAuto`, as the fallback with it. */
   streamPath: string;
   username: string;
   profile: string;

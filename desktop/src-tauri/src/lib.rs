@@ -1,3 +1,4 @@
+mod discovery;
 mod mp4fix;
 mod onvif;
 mod record;
@@ -926,6 +927,7 @@ pub fn run() {
             print_page,
             diag_log,
             onvif::camera_lens_step,
+            discovery::discover_cameras,
             video::camera_stream_start,
             video::camera_stream_stop,
             video::recording_start,

@@ -4,7 +4,7 @@ import { getSecret, hasSecret, setSecret } from "./api";
 import { lensStep } from "./lens";
 import { LENS_STEP_LIMITS, RETICLE_COLORS, RETICLE_LIMITS, RETICLE_STYLES, clamp, defaultReticles, isIPv4, isStreamPath } from "./config";
 import { NumberField, Section, Toggle } from "./ui";
-import type { CameraConfig, Notify, ProbeResult, ReticleConfig, ReticleStyle, VideoStats } from "./types";
+import type { CameraConfig, FoundCamera, Notify, ProbeResult, ReticleConfig, ReticleStyle, VideoStats } from "./types";
 
 type SectionId = "network" | "lens" | "reticle" | "display";
 const REVEAL_MS = 10_000;
@@ -100,6 +100,50 @@ function SecretField({ cameraId, notify, onStored }: { cameraId: string; notify:
         )}
       </div>
     </label>
+  );
+}
+
+/** ONVIF cameras found in the network; a click puts one into this slot and saves that. */
+function FoundList({ camera, found, discovering, onDiscover, onPick, otherIp, otherLabel }: {
+  camera: CameraConfig;
+  found: FoundCamera[] | null;
+  discovering: boolean;
+  onDiscover: () => void;
+  onPick: (camera: FoundCamera) => void;
+  otherIp: string;
+  otherLabel: string;
+}) {
+  return (
+    <div className="found">
+      <div className="found-head">
+        <span>Камеры в сети</span>
+        <button type="button" onClick={onDiscover} disabled={discovering}>
+          {discovering ? "поиск…" : "обновить"}
+        </button>
+      </div>
+      {found && found.length > 0 ? (
+        found.map((item) => {
+          const current = item.ip === camera.ip;
+          const mark = current ? "эта камера" : item.ip === otherIp ? otherLabel : item.otherSubnet ? "другая подсеть" : "";
+          return (
+            <button
+              key={item.ip}
+              type="button"
+              className={`found-row ${current ? "current" : ""}`}
+              disabled={current || item.otherSubnet}
+              onClick={() => onPick(item)}
+              title={item.otherSubnet ? "Вне сети этого ПК: задайте камере адрес из сети ПК утилитой производителя" : `Подключить ${item.ip} как эту камеру`}
+            >
+              <code>{item.ip}</code>
+              <span>{[item.hardware, item.name].filter(Boolean).join(" · ") || "ONVIF"}</span>
+              {mark && <em>{mark}</em>}
+            </button>
+          );
+        })
+      ) : (
+        <small className="found-empty">{discovering || found === null ? "Поиск камер ONVIF…" : "Камеры ONVIF не найдены"}</small>
+      )}
+    </div>
   );
 }
 
@@ -218,7 +262,7 @@ function ReticleEditor({ reticles, onChange, linked, onLinkedChange, bothLabel }
   );
 }
 
-export function CameraDrawer({ camera, side, label, otherLabel, probe, video, streaming, onStreamingChange, onRestartStream, reticlesLinked, onClose, onChange, onReticlesChange, onReticlesLinkedChange, onProbe, notify }: {
+export function CameraDrawer({ camera, side, label, otherLabel, probe, video, streaming, onStreamingChange, onRestartStream, found, discovering, onDiscover, onPick, otherIp, reticlesLinked, onClose, onChange, onReticlesChange, onReticlesLinkedChange, onProbe, notify }: {
   camera: CameraConfig;
   side: "left" | "right";
   label: string;
@@ -228,6 +272,12 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
   streaming: boolean;
   onStreamingChange: (on: boolean) => void;
   onRestartStream: () => void;
+  found: FoundCamera[] | null;
+  discovering: boolean;
+  onDiscover: () => void;
+  onPick: (camera: FoundCamera) => void;
+  /** Address of the other camera slot, to mark it in the found list. */
+  otherIp: string;
   reticlesLinked: boolean;
   onClose: () => void;
   onChange: (patch: Partial<CameraConfig>) => void;
@@ -242,6 +292,13 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
   const step = (mode: "zoom" | "focus", direction: 1 | -1) =>
     lensStep(camera, mode, direction, (error) => notify(`${label} · ${String(error)}`, "error"));
   const enabledReticles = camera.reticles.filter((reticle) => reticle.enabled).length;
+  // Opening the drawer looks for cameras, so the list is current when the operator needs it.
+  const discoverRef = useRef(onDiscover);
+  discoverRef.current = onDiscover;
+  useEffect(() => {
+    discoverRef.current();
+  }, []);
+  const pathValid = camera.streamAuto ? camera.streamPath === "" || isStreamPath(camera.streamPath) : isStreamPath(camera.streamPath);
 
   return (
     <aside className={`camera-drawer ${side} ${accent}`} aria-label={`Настройки ${label}`}>
@@ -266,6 +323,7 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
               <span>IP-адрес</span>
               <input value={camera.ip} spellCheck={false} onChange={(event) => onChange({ ip: event.target.value.trim() })} />
             </label>
+            <FoundList camera={camera} found={found} discovering={discovering} onDiscover={onDiscover} onPick={onPick} otherIp={otherIp} otherLabel={otherLabel} />
             <NumberField label="ONVIF порт" value={camera.onvifPort} integer min={1} max={65535} onChange={(onvifPort) => onChange({ onvifPort })} />
             <NumberField label="RTSP порт" value={camera.rtspPort} integer min={1} max={65535} onChange={(rtspPort) => onChange({ rtspPort })} />
             <label className="field wide">
@@ -273,14 +331,27 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
               <input value={camera.username} autoComplete="off" spellCheck={false} onChange={(event) => onChange({ username: event.target.value })} />
             </label>
             <SecretField cameraId={camera.id} notify={notify} onStored={onRestartStream} />
-            <label className={`field wide ${isStreamPath(camera.streamPath) ? "" : "invalid"}`}>
-              <span>Путь RTSP-потока</span>
-              <input value={camera.streamPath} spellCheck={false} placeholder="/media/video1" onChange={(event) => onChange({ streamPath: event.target.value.trim() })} />
+            <div className="setting-line">
+              <span>
+                Путь потока по ONVIF <small>{camera.streamAuto ? "камера сообщает его сама при каждом подключении" : "путь задан вручную"}</small>
+              </span>
+              <Toggle value={camera.streamAuto} onChange={(streamAuto) => onChange({ streamAuto })} />
+            </div>
+            <label className={`field wide ${pathValid ? "" : "invalid"}`}>
+              <span>{camera.streamAuto ? "Запасной путь RTSP" : "Путь RTSP-потока"}</span>
+              <input
+                value={camera.streamPath}
+                spellCheck={false}
+                placeholder={camera.streamAuto ? "нужен, только если камера не ответит по ONVIF" : "/media/video1"}
+                onChange={(event) => onChange({ streamPath: event.target.value.trim() })}
+              />
             </label>
           </div>
-          <p className="hint">
-            Путь зависит от производителя: Uniview <code>/media/video1</code>, Dahua <code>/cam/realmonitor?channel=1&amp;subtype=0</code>, Beward <code>/av0_0</code>
-          </p>
+          {!camera.streamAuto && (
+            <p className="hint">
+              Путь зависит от производителя: Uniview <code>/media/video1</code>, Dahua <code>/cam/realmonitor?channel=1&amp;subtype=0</code>, Beward <code>/av0_0</code>
+            </p>
+          )}
           <div className="row-actions">
             <button type="button" onClick={onProbe}>
               <RefreshCw /> Проверить связь
@@ -294,6 +365,11 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
               {video.state === "playing"
                 ? `Поток ${video.width ?? "—"}×${video.height ?? "—"} · ${video.fps ?? "—"} FPS · пропущено кадров: ${video.dropped}`
                 : video.state === "error" ? `Ошибка: ${video.message}` : "Подключение…"}
+            </p>
+          )}
+          {streaming && video.state !== "error" && video.message && (
+            <p className="hint" title={video.message}>
+              {video.message}
             </p>
           )}
           <div className="setting-line">
