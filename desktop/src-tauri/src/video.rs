@@ -35,6 +35,16 @@ fn is_auth_failure(message: &str) -> bool {
     message.contains("401") || message.contains("Unauthorized")
 }
 
+/// A camera answering «404» means the path is wrong, not the address: the RTSP error alone does not
+/// say that, and every vendor spells the path differently.
+fn explain(message: &str) -> String {
+    if message.contains("404") || message.contains("Not Found") {
+        format!("{message} — проверьте путь потока: Uniview /media/video1, Dahua /cam/realmonitor?channel=1&subtype=0, Beward /av0_0")
+    } else {
+        message.to_string()
+    }
+}
+
 /// One stream task per camera, tagged with the UI token that started it. Starting a camera again
 /// replaces its task; a stop only ends the task it was issued for, so a late stop from an unmounted
 /// view never kills the stream a newer view has just started.
@@ -309,7 +319,7 @@ async fn run(context: StreamContext, channel: Channel<InvokeResponseBody>) {
             let _ = send_state(&channel, STATE_ERROR, AUTH_FAILED);
             return;
         }
-        if send_state(&channel, STATE_ERROR, &message).is_err() {
+        if send_state(&channel, STATE_ERROR, &explain(&message)).is_err() {
             return;
         }
         tokio::time::sleep(RETRY_DELAY).await;
@@ -384,6 +394,12 @@ mod tests {
         assert!(stream_url("192.168.1.68", 554, "media/video1").is_err());
         assert!(stream_url("192.168.1.68", 554, "/a b").is_err());
         assert!(stream_url("192.168.1.68", 554, "/live?channel=0&subtype=0").is_ok());
+    }
+
+    #[test]
+    fn a_rejected_path_is_named_in_the_error() {
+        assert!(explain("RTSP 404 Not Found").contains("путь потока"));
+        assert_eq!(explain("камера не ответила на DESCRIBE"), "камера не ответила на DESCRIBE");
     }
 
     #[test]

@@ -43,7 +43,7 @@ ONCAM/MKIS100TEST is an operator workstation for aligning the optical axis of CA
 ## Hardware and protocols
 
 - CAM 01 default: `192.168.1.68`, ONVIF `80`, RTSP `554`.
-- CAM 02 default: `192.168.1.108`, ONVIF `80`, RTSP `554`.
+- CAM 02 default: `192.168.1.99`, RTSP `554` — an analogue thermal camera behind a Beward B102S video server. It rejects the ONVIF `PasswordDigest` token (`ter:NotAuthorized`, "Incorrect password type"), so the lens controls stay dead for it; RTSP is unaffected.
 - TL.0009 default project profile: `192.168.1.115:9760` (verified on the device: the service protocol answers only on 9760; 9761/9762 accept TCP but stay silent).
 - Rangefinder: `192.168.1.7:20108`.
 - Relay X3 fallback: `192.168.127.254:9762`.
@@ -68,7 +68,7 @@ Motion safety in the new client: any STOP (button, Esc, D-pad release) cancels a
 
 Implemented: compact cockpit layout, push drawers, resizing/swapping panes, configuration UI with schema migration, OS keychain (native backends), device modules in the summary (add, edit address, hide, remove) with live TCP link status, up to three configurable reticles per camera, TL.0009 service jog (dead-man + watchdog)/stop/self-test, five rocking profiles with progress events, TCP reachability tests, recording settings UI, hover D-pad and mouse lens gestures.
 
-Implemented since: RTSP video — `src-tauri/src/video.rs` (retina, digest auth with the keychain password, no retry after 401 so the camera account is not locked) forwards H.264/H.265 access units over a Tauri channel; `desktop/src/VideoSurface.tsx` decodes them with WebCodecs onto a canvas. Stream path is per camera (`streamPath`): CAM 01 Uniview `/media/video1`, CAM 02 `/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif`. H.265 plays only where the WebView has a hardware HEVC decoder.
+Implemented since: RTSP video — `src-tauri/src/video.rs` (retina, digest auth with the keychain password, no retry after 401 so the camera account is not locked) forwards H.264/H.265 access units over a Tauri channel; `desktop/src/VideoSurface.tsx` decodes them with WebCodecs onto a canvas. Stream path is per camera (`streamPath`): CAM 01 Uniview `/media/video1`, CAM 02 Beward `/av0_0`; see `desktop/docs/RTSP_CAMERAS.md` for the known paths and the no-video checklist. H.265 plays only where the WebView has a hardware HEVC decoder.
 
 Also implemented (needs confirmation on the real hardware): ONVIF lens — `src-tauri/src/onvif.rs`, zoom via PTZ ContinuousMove and focus via Imaging Move, WS-Security digest stamped with the camera clock (both cameras have wrong clocks), plain TCP so system proxies (Hiddify on this PC) are bypassed, watchdog stops the lens 350 ms after the last step, a rejected password is not retried. Recording — `src-tauri/src/record.rs`, fragmented MP4 written from the received access units (no FFmpeg, no transcoding), segments rotate on key frames, optional JSON sidecar without credentials; MKV and the encrypted-secrets manifest are not implemented and shown as such. Alignment — `desktop/src/alignment.ts`, hot target = brightest compact blob, sub-pixel centroid, error = target minus centre of the first enabled reticle in video pixels; CAM 02 must be within tolerance first, «СВЕДЕНО» (white) when both are within `tolerancePx` for `stableMs`.
 

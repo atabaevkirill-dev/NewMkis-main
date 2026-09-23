@@ -96,7 +96,7 @@ export function createDefaultConfig(): AppConfig {
     // CAM 01 is a Uniview UV-ZNH2130M (main stream /media/video1); CAM 02 (thermal) uses the Dahua-style path.
     cameras: [
       camera("camera1", "CAM 01 · OPTICAL", "192.168.1.68", "/media/video1", "PROFILE_1"),
-      camera("camera2", "CAM 02 · THERMAL", "192.168.1.108", "/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif", "THERMAL_1"),
+      camera("camera2", "CAM 02 · THERMAL", "192.168.1.99", "/av0_0", "THERMAL_1"),
     ],
     platformIp: "192.168.1.115",
     platformPort: 9760,

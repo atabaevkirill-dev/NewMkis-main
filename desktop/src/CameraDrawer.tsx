@@ -257,6 +257,9 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
               <input value={camera.streamPath} spellCheck={false} placeholder="/media/video1" onChange={(event) => onChange({ streamPath: event.target.value.trim() })} />
             </label>
           </div>
+          <p className="hint">
+            Путь зависит от производителя: Uniview <code>/media/video1</code>, Dahua <code>/cam/realmonitor?channel=1&amp;subtype=0</code>, Beward <code>/av0_0</code>
+          </p>
           <div className="row-actions">
             <button type="button" onClick={onProbe}>
               <RefreshCw /> Проверить связь
