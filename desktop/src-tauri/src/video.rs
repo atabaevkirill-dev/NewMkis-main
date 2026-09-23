@@ -411,3 +411,119 @@ mod tests {
         assert_eq!(&bytes[10..], &[9, 8]);
     }
 }
+
+/// Raw RTP dump of a real camera (`MKIS_RTP=camera2@rtsp://192.168.1.99:554/av0_0`): finds payloads
+/// with `00 00 00 xx` inside, which retina rejects. The password comes from the keychain, never printed.
+#[cfg(test)]
+mod rtp_probe {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn dump_raw_rtp() {
+        let spec = std::env::var("MKIS_RTP").expect("MKIS_RTP=camera2@rtsp://ip:554/path");
+        let (id, url) = spec.split_once('@').unwrap();
+        let url = Url::parse(url).unwrap();
+        let password = crate::keyring_entry(id).unwrap().get_password().unwrap();
+        tauri::async_runtime::block_on(async move {
+            let options = SessionOptions::default()
+                .creds(Some(Credentials { username: "admin".into(), password }))
+                .session_group(Arc::new(SessionGroup::default()));
+            let mut session = Session::describe(url, options).await.unwrap();
+            for (index, stream) in session.streams().iter().enumerate() {
+                println!("stream {index}: {} {} {:?}", stream.media(), stream.encoding_name(), stream.parameters().map(|_| "params"));
+            }
+            let index = session.streams().iter().position(|stream| stream.media() == "video").unwrap();
+            session.setup(index, SetupOptions::default()).await.unwrap();
+            let mut playing = session.play(PlayOptions::default()).await.unwrap();
+            let mut types: HashMap<u8, usize> = HashMap::new();
+            let (mut packets, mut bad) = (0, 0);
+            // Tail of the previous FU-A fragment, to catch sequences split across packets.
+            let mut tail: Vec<u8> = Vec::new();
+            let mut zero_tails = 0;
+            let started = std::time::Instant::now();
+            while started.elapsed() < Duration::from_secs(60) {
+                let Some(item) = playing.next().await else { break };
+                let retina::client::PacketItem::Rtp(packet) = item.unwrap() else { continue };
+                packets += 1;
+                let payload = packet.payload();
+                let nal_type = payload[0] & 0x1f;
+                *types.entry(nal_type).or_default() += 1;
+                // Body to scan: skip the NAL header (single NAL) or NAL + FU header (FU-A).
+                let body = if nal_type == 28 { &payload[2..] } else { &payload[1..] };
+                if nal_type == 28 {
+                    let start = payload[1] >> 7 == 1;
+                    if start {
+                        tail.clear();
+                    }
+                    let mut joined = tail.clone();
+                    joined.extend_from_slice(&body[..body.len().min(4)]);
+                    if let Some(at) = joined.windows(4).position(|w| w[0] == 0 && w[1] == 0 && w[2] == 0 && w[3] > 1) {
+                        bad += 1;
+                        if bad <= 12 {
+                            println!(
+                                "СТЫК seq {} len {} FU hdr {:02x}: хвост {:02x?} + начало {:02x?} (at {at})",
+                                packet.sequence_number(), payload.len(), payload[1], tail, &body[..body.len().min(6)]
+                            );
+                        }
+                    }
+                    if body.ends_with(&[0]) {
+                        zero_tails += 1;
+                    }
+                    tail = body[body.len().saturating_sub(3)..].to_vec();
+                }
+                if let Some(at) = body.windows(4).position(|w| w[0] == 0 && w[1] == 0 && w[2] == 0 && w[3] > 1) {
+                    bad += 1;
+                    if bad <= 12 {
+                        let fu = if nal_type == 28 { format!(" FU hdr {:02x} (start {} end {} type {})", payload[1], payload[1] >> 7, (payload[1] >> 6) & 1, payload[1] & 0x1f) } else { String::new() };
+                        let from = at.saturating_sub(8);
+                        let to = (at + 24).min(body.len());
+                        println!(
+                            "seq {} mark {} len {} nal {}{} | at {}: {:02x?}",
+                            packet.sequence_number(), packet.mark(), payload.len(), nal_type, fu, at, &body[from..to]
+                        );
+                        println!("   head: {:02x?}  tail: {:02x?}", &payload[..payload.len().min(12)], &payload[payload.len().saturating_sub(8)..]);
+                    }
+                }
+            }
+            println!("packets {packets}, with 00 00 00 xx: {bad}, FU-A fragments ending in 00: {zero_tails}, NAL types: {types:?}");
+        });
+    }
+
+    /// The same camera through the (patched) depacketizer: frames and key frames over 90 s, and the
+    /// first error if the session still fails.
+    #[test]
+    #[ignore]
+    fn depacketize_real_stream() {
+        let spec = std::env::var("MKIS_RTP").expect("MKIS_RTP=camera2@rtsp://ip:554/path");
+        let (id, url) = spec.split_once('@').unwrap();
+        let url = Url::parse(url).unwrap();
+        let password = crate::keyring_entry(id).unwrap().get_password().unwrap();
+        tauri::async_runtime::block_on(async move {
+            let options = SessionOptions::default()
+                .creds(Some(Credentials { username: "admin".into(), password }))
+                .session_group(Arc::new(SessionGroup::default()));
+            let mut session = Session::describe(url, options).await.unwrap();
+            let index = session.streams().iter().position(|stream| stream.media() == "video").unwrap();
+            session.setup(index, SetupOptions::default().frame_format(FrameFormat::MP4)).await.unwrap();
+            let mut demuxed = session.play(PlayOptions::default()).await.unwrap().demuxed().unwrap();
+            let (mut frames, mut keys) = (0, 0);
+            let started = std::time::Instant::now();
+            while started.elapsed() < Duration::from_secs(90) {
+                match demuxed.next().await {
+                    Some(Ok(CodecItem::VideoFrame(frame))) => {
+                        frames += 1;
+                        keys += usize::from(frame.is_random_access_point());
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => {
+                        println!("ошибка после {frames} кадров: {error}");
+                        break;
+                    }
+                    None => break,
+                }
+            }
+            println!("кадров {frames}, ключевых {keys} за {:.0} с", started.elapsed().as_secs_f64());
+        });
+    }
+}

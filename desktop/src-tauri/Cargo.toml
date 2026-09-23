@@ -1,6 +1,6 @@
 [package]
 name = "oncam-desktop"
-version = "0.2.1"
+version = "0.2.2"
 description = "MKIS100TEST axis alignment workstation"
 authors = ["ONCAM"]
 edition = "2021"
@@ -35,3 +35,9 @@ keyring = { version = "3", features = ["windows-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
+# retina 0.4.20 with one fix: a NAL body containing `00 00 00 xx` (Beward B102S pads key frames
+# with zeros and stray bytes) drops the rest of that NAL instead of failing the RTSP session.
+# See vendor/retina/MKIS100TEST.md.
+[patch.crates-io]
+retina = { path = "vendor/retina" }

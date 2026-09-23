@@ -110,10 +110,12 @@ export async function printPage(): Promise<void> {
   window.print();
 }
 
-/** One wheel or button step; the native side keeps the move going while steps arrive, then stops it. */
-export async function cameraLensStep(camera: CameraConfig, mode: "zoom" | "focus", direction: number): Promise<void> {
+/** `steps` signed lens steps of the camera zoom/focus step each; resolves once the lens has moved. Use `lensStep` from lens.ts. */
+export async function cameraLensStep(camera: CameraConfig, mode: "zoom" | "focus", steps: number): Promise<void> {
   if (!inTauri()) throw new Error(BROWSER_MODE);
-  await invoke("camera_lens_step", { cameraId: camera.id, ip: camera.ip, port: camera.onvifPort, username: camera.username, mode, direction });
+  await invoke("camera_lens_step", {
+    cameraId: camera.id, ip: camera.ip, port: camera.onvifPort, username: camera.username, mode, steps, stepPercent: mode === "zoom" ? camera.zoomStepPercent : camera.focusStepPercent,
+  });
 }
 
 const STREAM_STATES = ["connecting", "playing", "error"] as const;

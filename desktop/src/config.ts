@@ -72,6 +72,8 @@ export const MODULE_PRESETS: Record<DeviceKind, { label: string; protocol: strin
 };
 
 export const clamp = (value: number, [min, max]: Range) => Math.min(max, Math.max(min, value));
+/** Must match `STEP_PERCENT` in onvif.rs. */
+export const LENS_STEP_LIMITS: Range = [0.01, 25];
 export const isIPv4 = (value: string) =>
   /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(value.trim());
 export const isPort = (value: number) => Number.isInteger(value) && value >= 1 && value <= 65535;
@@ -88,12 +90,12 @@ export function defaultReticles(): ReticleConfig[] {
 
 export function createDefaultConfig(): AppConfig {
   const camera = (id: CameraConfig["id"], name: string, ip: string, streamPath: string, profile: string): CameraConfig => ({
-    id, name, ip, onvifPort: 80, rtspPort: 554, streamPath, username: "admin", profile, autoConnect: true, osd: false, reticles: defaultReticles(),
+    id, name, ip, onvifPort: 80, rtspPort: 554, streamPath, username: "admin", profile, autoConnect: true, osd: false, zoomStepPercent: 0.1, focusStepPercent: 2, reticles: defaultReticles(),
   });
   return {
     schemaVersion: SCHEMA_VERSION,
     productTitle: "",
-    // CAM 01 is a Uniview UV-ZNH2130M (main stream /media/video1); CAM 02 (thermal) uses the Dahua-style path.
+    // CAM 01 is a Uniview UV-ZNH2130M (main stream /media/video1); CAM 02 is an analogue thermal camera behind a Beward B102S.
     cameras: [
       camera("camera1", "CAM 01 · OPTICAL", "192.168.1.68", "/media/video1", "PROFILE_1"),
       camera("camera2", "CAM 02 · THERMAL", "192.168.1.99", "/av0_0", "THERMAL_1"),
@@ -165,7 +167,7 @@ function normalizeReticle(defaults: ReticleConfig, stored: unknown): ReticleConf
 function normalizeCamera(defaults: CameraConfig, stored: unknown): CameraConfig {
   const camera = mergeShape(defaults, stored);
   const reticles = isRecord(stored) && Array.isArray(stored.reticles) ? stored.reticles : [];
-  return { ...camera, id: defaults.id, reticles: defaults.reticles.map((reticle, index) => normalizeReticle(reticle, reticles[index])) };
+  return { ...camera, id: defaults.id, zoomStepPercent: clamp(camera.zoomStepPercent, LENS_STEP_LIMITS), focusStepPercent: clamp(camera.focusStepPercent, LENS_STEP_LIMITS), reticles: defaults.reticles.map((reticle, index) => normalizeReticle(reticle, reticles[index])) };
 }
 
 function normalizeModules(stored: unknown): DeviceModule[] {

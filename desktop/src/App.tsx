@@ -3,7 +3,8 @@ import { flushSync } from "react-dom";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { AlignCenter, ArrowLeftRight, CircleDot, Crosshair, GripVertical, PanelTopOpen, Pencil, Radio, Save, SlidersHorizontal, Square } from "lucide-react";
 import { version } from "../package.json";
-import { cameraLensStep, inTauri, loadConfig, onRecordingState, onRockingState, persistConfig, printPage, probeModules, startRecording, stopRecording } from "./api";
+import { inTauri, loadConfig, onRecordingState, onRockingState, persistConfig, printPage, probeModules, startRecording, stopRecording } from "./api";
+import { lensStep } from "./lens";
 import { CameraDrawer } from "./CameraDrawer";
 import { MAX_TITLE_LENGTH, OFF_STATS, createDefaultConfig, listModules, moduleName } from "./config";
 import { PrintReport } from "./PrintReport";
@@ -22,7 +23,10 @@ type Notice = { text: string; tone: "info" | "error" };
 
 const PROBE_INTERVAL_MS = 5000;
 const NOTICE_MS = 5000;
-const LENS_STEP_MS = 90;
+/** A wheel event this large is one notch (Chromium on Windows reports 100 px per notch). */
+const NOTCH_DELTA = 30;
+/** Small deltas (touchpad) that add up to one step. */
+const NOTCH_PIXELS = 100;
 
 const VideoPane = memo(function VideoPane({ camera, label, variant, jog, streaming, restartKey, video, onVideoStats, measure, onTarget }: {
   camera: CameraConfig;
@@ -47,7 +51,8 @@ const VideoPane = memo(function VideoPane({ camera, label, variant, jog, streami
   useEffect(() => {
     const pane = paneRef.current;
     if (!pane) return;
-    let lastStep = 0;
+    // Touchpads and smooth-scrolling wheels send small deltas: they add up to one step per notch.
+    let smallDeltas = 0;
     const show = (message: string) => {
       setLensIndicator(message);
       if (indicatorTimer.current !== null) window.clearTimeout(indicatorTimer.current);
@@ -56,13 +61,19 @@ const VideoPane = memo(function VideoPane({ camera, label, variant, jog, streami
     const onWheel = (event: WheelEvent) => {
       if ((event.target as HTMLElement).closest(".video-dpad")) return;
       event.preventDefault();
-      const now = performance.now();
-      if (now - lastStep < LENS_STEP_MS) return;
-      lastStep = now;
+      if (event.deltaY === 0) return;
+      // A notch is one event of ≥ NOTCH_DELTA px (or in lines/pages): exactly one step.
+      if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL || Math.abs(event.deltaY) >= NOTCH_DELTA) {
+        smallDeltas = 0;
+      } else {
+        smallDeltas += event.deltaY;
+        if (Math.abs(smallDeltas) < NOTCH_PIXELS) return;
+        smallDeltas = 0;
+      }
       const direction = event.deltaY < 0 ? 1 : -1;
       const mode = rightMouseDown.current ? "focus" : "zoom";
       show(mode === "zoom" ? `ZOOM ${direction > 0 ? "+" : "−"}` : `FOCUS ${direction > 0 ? "FAR" : "NEAR"}`);
-      cameraLensStep(cameraRef.current, mode, direction).catch((error) => show(`ONVIF · ${String(error)}`));
+      lensStep(cameraRef.current, mode, direction, (error) => show(`ONVIF · ${String(error)}`));
     };
     pane.addEventListener("wheel", onWheel, { passive: false });
     return () => {

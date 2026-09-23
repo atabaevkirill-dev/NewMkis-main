@@ -22,7 +22,7 @@ optional CAM 01 drawer | unified dual-video surface | optional CAM 02 drawer
 single persistent telemetry/status bar
 ```
 
-The dual-video surface supports a draggable divider and channel swapping. Video has no permanent technical clutter. Camera OSD is optional. D-pad is hover-only. Zoom uses wheel; focus uses right-button + wheel.
+The dual-video surface supports a draggable divider and channel swapping. Video has no permanent technical clutter. Camera OSD is optional. D-pad is hover-only. Zoom uses wheel; focus uses right-button + wheel; one notch or button press is one lens step.
 
 ## Alignment behavior
 

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff, RefreshCw, RotateCcw, Save, Trash2, X, Zap } from "lucide-react";
-import { cameraLensStep, getSecret, hasSecret, setSecret } from "./api";
-import { RETICLE_COLORS, RETICLE_LIMITS, RETICLE_STYLES, clamp, defaultReticles, isIPv4, isStreamPath } from "./config";
+import { getSecret, hasSecret, setSecret } from "./api";
+import { lensStep } from "./lens";
+import { LENS_STEP_LIMITS, RETICLE_COLORS, RETICLE_LIMITS, RETICLE_STYLES, clamp, defaultReticles, isIPv4, isStreamPath } from "./config";
 import { NumberField, Section, Toggle } from "./ui";
 import type { CameraConfig, Notify, ProbeResult, ReticleConfig, ReticleStyle, VideoStats } from "./types";
 
@@ -99,6 +100,26 @@ function SecretField({ cameraId, notify, onStored }: { cameraId: string; notify:
         )}
       </div>
     </label>
+  );
+}
+
+/**
+ * Lens step in percent. Only in-range values are committed: clamping while typing would turn the
+ * intermediate «0.0» of «0.05» into the minimum and rewrite the field under the operator's cursor.
+ */
+function StepField({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const [min, max] = LENS_STEP_LIMITS;
+  return (
+    <NumberField
+      value={value}
+      unit="%"
+      className="compact"
+      min={min}
+      max={max}
+      onChange={(next) => {
+        if (next >= min && next <= max) onChange(next);
+      }}
+    />
   );
 }
 
@@ -219,7 +240,7 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
   const accent = side === "left" ? "blue" : "amber";
   const toggle = (id: SectionId) => setOpen((current) => (current === id ? null : id));
   const step = (mode: "zoom" | "focus", direction: 1 | -1) =>
-    void cameraLensStep(camera, mode, direction).catch((error) => notify(`${label} · ${String(error)}`, "error"));
+    lensStep(camera, mode, direction, (error) => notify(`${label} · ${String(error)}`, "error"));
   const enabledReticles = camera.reticles.filter((reticle) => reticle.enabled).length;
 
   return (
@@ -290,7 +311,15 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
             <button type="button" onClick={() => step("focus", -1)}>Near</button>
             <button type="button" onClick={() => step("focus", 1)}>Far</button>
           </div>
-          <p className="hint">Колесо над видео — zoom · ПКМ + колесо — focus</p>
+          <div className="setting-line">
+            <span>Шаг зума <small>% диапазона, от {LENS_STEP_LIMITS[0]}</small></span>
+            <StepField value={camera.zoomStepPercent} onChange={(zoomStepPercent) => onChange({ zoomStepPercent })} />
+          </div>
+          <div className="setting-line">
+            <span>Шаг фокуса <small>% диапазона</small></span>
+            <StepField value={camera.focusStepPercent} onChange={(focusStepPercent) => onChange({ focusStepPercent })} />
+          </div>
+          <p className="hint">Одно деление колеса или нажатие — один шаг. Колесо над видео — zoom · ПКМ + колесо — focus</p>
         </Section>
 
         <Section title="Перекрестие" badge={`${enabledReticles}/3${reticlesLinked ? " · оба окна" : ""}`} open={open === "reticle"} onToggle={() => toggle("reticle")}>

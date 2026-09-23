@@ -71,6 +71,10 @@ export interface CameraConfig {
   profile: string;
   autoConnect: boolean;
   osd: boolean;
+  /** One zoom step (wheel notch or button press), percent of the zoom range. */
+  zoomStepPercent: number;
+  /** One focus step, percent of the focus range. */
+  focusStepPercent: number;
   reticles: ReticleConfig[];
 }
 
