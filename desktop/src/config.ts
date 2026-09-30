@@ -12,7 +12,7 @@ import type {
 
 export const SCHEMA_VERSION = 4;
 
-export const OFF_STATS: VideoStats = { state: "off", fps: null, width: null, height: null, message: "", dropped: 0 };
+export const OFF_STATS: VideoStats = { state: "off", fps: null, width: null, height: null, message: "", dropped: 0, live: false };
 export const MAX_CUSTOM_MODULES = 24;
 export const MAX_NAME_LENGTH = 32;
 export const MAX_TITLE_LENGTH = 160;

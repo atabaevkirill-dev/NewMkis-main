@@ -12,6 +12,11 @@ import type { CameraConfig, StreamEvent, VideoStats } from "./types";
 const MAX_DECODE_QUEUE = 60;
 const STATS_MS = 1000;
 const MEASURE_MS = 200;
+/**
+ * No frame drawn for this long: the picture is cleared and the pane shows «НЕТ СИГНАЛА», so a frozen
+ * frame never passes for live video and alignment stops measuring it (the native side reconnects after 5 s).
+ */
+const NO_SIGNAL_MS = 2000;
 
 /**
  * Renders one camera stream. Encoded H.264/H.265 frames arrive from the native RTSP client and are
@@ -80,11 +85,11 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
     const context = canvas?.getContext("2d");
     const report = (stats: VideoStats) => onStatsRef.current(id, stats);
     if (!active || !canvas || !context || !inTauri()) {
-      // Only a stream that is switched off clears the picture; a restart keeps the last frame visible.
       if (canvas && context) context.clearRect(0, 0, canvas.width, canvas.height);
       report(OFF_STATS);
       return;
     }
+    const clear = () => context.clearRect(0, 0, canvas.width, canvas.height);
     if (typeof VideoDecoder === "undefined") {
       report({ ...OFF_STATS, state: "error", message: "WebCodecs недоступен в этом WebView" });
       return;
@@ -99,6 +104,8 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
     // Timing diagnostics, logged every 5 s: gaps between arriving frames and between drawn frames.
     let lastArrival = 0, maxArrivalGap = 0, lastDraw = 0, maxDrawGap = 0, maxQueue = 0, diagAt = performance.now();
     let submitted = 0, output = 0, maxHeld = 0, loggedDropped = 0;
+    /** When the last frame was drawn: the picture counts as live for NO_SIGNAL_MS after it. */
+    let pictureAt = 0;
     // Only anomalies are logged: a draw pause over 150 ms or newly dropped frames.
     let stats: VideoStats = { ...OFF_STATS, state: "connecting" };
     const update = (patch: Partial<VideoStats>) => {
@@ -153,7 +160,8 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
               output += 1;
               const drawnAt = performance.now();
               if (lastDraw) maxDrawGap = Math.max(maxDrawGap, drawnAt - lastDraw);
-              lastDraw = drawnAt;
+              lastDraw = pictureAt = drawnAt;
+              if (!stats.live) update({ live: true });
             },
             error: (error) => {
               if (disposed || decoder !== next) return;
@@ -203,7 +211,8 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
       else if (event.state === "playing") update({ state: "playing", message: event.message });
       else {
         closeDecoder();
-        update({ state: "error", fps: null, message: event.message });
+        clear();
+        update({ state: "error", fps: null, live: false, message: event.message });
       }
     });
     stream.started.catch((error) => !disposed && update({ state: "error", message: String(error) }));
@@ -215,6 +224,10 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
       const fps = (drawn * 1000) / (now - lastTick);
       drawn = 0;
       lastTick = now;
+      if (stats.live && now - pictureAt > NO_SIGNAL_MS) {
+        clear();
+        update({ live: false });
+      }
       if (stats.state === "playing") update({ fps: Math.round(fps * 10) / 10, dropped });
       if (stats.state === "playing" && now - diagAt >= 5000 && maxDrawGap < 150 && dropped === loggedDropped) {
         maxArrivalGap = maxDrawGap = maxQueue = maxHeld = 0;
@@ -232,6 +245,7 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
       window.clearInterval(timer);
       stream.stop();
       closeDecoder();
+      clear();
       report(OFF_STATS);
     };
     // Only the connection fields reopen the stream; reticle or OSD edits must not.

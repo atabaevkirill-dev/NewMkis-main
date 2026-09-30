@@ -39,6 +39,7 @@ ONCAM/MKIS100TEST is an operator workstation for aligning the optical axis of CA
 11. Wheel over a video pane controls that camera's ONVIF zoom.
 12. Right mouse button + wheel controls that camera's ONVIF focus; suppress the context menu over video.
 13. Alignment success is white, not green. CAM 02 is the reference. Default success rule: error within 3 px for 1.2 s.
+14. A pane without a live picture (stream off, connecting, in error, or no frame drawn for 2 s) shows only «НЕТ СИГНАЛА» with the reason and the camera address: no placeholder imagery, no frozen last frame, no reticles. The stale frame is cleared, so alignment never measures it.
 
 ## Hardware and protocols
 

@@ -208,4 +208,6 @@ export interface VideoStats {
   message: string;
   /** Frames skipped since the stream opened (waiting for a key frame after overload or a decoder error). */
   dropped: number;
+  /** A decoded frame was drawn recently; otherwise the pane shows «НЕТ СИГНАЛА», never a stale picture. */
+  live: boolean;
 }

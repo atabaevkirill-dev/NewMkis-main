@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { AlignCenter, ArrowLeftRight, CircleDot, Crosshair, GripVertical, PanelTopOpen, Pencil, Radio, Save, SlidersHorizontal, Square } from "lucide-react";
+import { AlignCenter, ArrowLeftRight, CircleDot, Crosshair, GripVertical, PanelTopOpen, Pencil, Save, SlidersHorizontal, Square } from "lucide-react";
 import { version } from "../package.json";
 import { discoverCameras, inTauri, loadConfig, onRecordingState, onRockingState, persistConfig, printPage, probeModules, startRecording, stopRecording } from "./api";
 import { lensStep } from "./lens";
@@ -30,10 +30,23 @@ const NOTCH_DELTA = 30;
 /** Small deltas (touchpad) that add up to one step. */
 const NOTCH_PIXELS = 100;
 
-const VideoPane = memo(function VideoPane({ camera, label, variant, jog, streaming, restartKey, video, onVideoStats, measure, onTarget }: {
+/** Why a pane has no picture, shown under «НЕТ СИГНАЛА». */
+function noSignalReason(video: VideoStats): string {
+  switch (video.state) {
+    case "off":
+      return "Поток не подключён";
+    case "connecting":
+      return "Подключение…";
+    case "playing":
+      return "Ожидание кадров…";
+    case "error":
+      return video.message ? video.message[0].toUpperCase() + video.message.slice(1) : "Ошибка потока";
+  }
+}
+
+const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, restartKey, video, onVideoStats, measure, onTarget }: {
   camera: CameraConfig;
   label: string;
-  variant: "optical" | "thermal";
   jog: JogControl;
   streaming: boolean;
   restartKey: number;
@@ -87,16 +100,15 @@ const VideoPane = memo(function VideoPane({ camera, label, variant, jog, streami
   return (
     <div
       ref={paneRef}
-      className={`video-pane ${variant}`}
+      className="video-pane"
       onContextMenu={(event) => event.preventDefault()}
       onPointerDown={(event) => { if (event.button === 2) rightMouseDown.current = true; }}
       onPointerUp={(event) => { if (event.button === 2) rightMouseDown.current = false; }}
       onPointerCancel={() => { rightMouseDown.current = false; }}
       onPointerLeave={() => { rightMouseDown.current = false; }}
     >
-      {(video.state === "off" || video.state === "error") && <div className="video-placeholder" />}
       <VideoSurface camera={camera} active={streaming} restartKey={restartKey} onStats={onVideoStats} measure={measure} onTarget={onTarget} />
-      <ReticleLayer reticles={camera.reticles} />
+      {video.live && <ReticleLayer reticles={camera.reticles} />}
       {camera.osd && (
         <div className="camera-osd"><strong>{label}</strong><span className="fps">{video.fps !== null ? Math.round(video.fps) : "—"} FPS</span><span>ONVIF —</span></div>
       )}
@@ -108,11 +120,11 @@ const VideoPane = memo(function VideoPane({ camera, label, variant, jog, streami
         <i /><button type="button" {...jog.bind("down")} aria-label="Поворотка вниз">▼</button><i />
       </div>
       {lensIndicator && <div className="lens-indicator">{lensIndicator}</div>}
-      {video.state !== "playing" && (
-        <div className={`stream-state ${video.state}`} title={video.message}>
-          <Radio />
-          <span>{video.state === "connecting" ? "Подключение…" : video.state === "error" ? video.message || "Ошибка потока" : "Нет потока"}</span>
-          <code>{camera.streamAuto ? `RTSP ${camera.ip} · путь по ONVIF` : `RTSP ${camera.ip}:${camera.rtspPort}${camera.streamPath}`}</code>
+      {!video.live && (
+        <div className={`no-signal ${video.state}`}>
+          <strong>НЕТ СИГНАЛА</strong>
+          <span title={video.message || undefined}>{noSignalReason(video)}</span>
+          <code>{label} · {camera.streamAuto ? `RTSP ${camera.ip} · путь по ONVIF` : `RTSP ${camera.ip}:${camera.rtspPort}${camera.streamPath}`}</code>
         </div>
       )}
     </div>
@@ -699,7 +711,6 @@ export default function App() {
       key={camera.id}
       camera={camera}
       label={camera.id === "camera1" ? label1 : label2}
-      variant={camera.id === "camera1" ? "optical" : "thermal"}
       jog={jog}
       streaming={streaming(camera)}
       restartKey={restartKeys[camera.id]}
