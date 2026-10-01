@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff, RefreshCw, RotateCcw, Save, Trash2, X, Zap } from "lucide-react";
-import { getSecret, hasSecret, setSecret } from "./api";
+import { getSecret, hasSecret, setSecret, thermalReset } from "./api";
 import { lensStep } from "./lens";
 import { LENS_STEP_LIMITS, RETICLE_COLORS, RETICLE_LIMITS, RETICLE_STYLES, clamp, defaultReticles, isIPv4, isStreamPath } from "./config";
 import { NumberField, Section, Toggle } from "./ui";
-import type { CameraConfig, FoundCamera, Notify, ProbeResult, ReticleConfig, ReticleStyle, VideoStats } from "./types";
+import { ThermalEditor } from "./ThermalLayer";
+import type { CameraConfig, FoundCamera, Notify, ProbeResult, ReticleConfig, ReticleStyle, ThermalReadings, VideoStats } from "./types";
 
-type SectionId = "network" | "lens" | "reticle" | "display";
+type SectionId = "network" | "lens" | "reticle" | "thermal" | "display";
 const REVEAL_MS = 10_000;
 
-function SecretField({ cameraId, notify, onStored }: { cameraId: string; notify: Notify; onStored: () => void }) {
+function SecretField({ cameraId, label = "Пароль", notify, onStored }: { cameraId: string; label?: string; notify: Notify; onStored: () => void }) {
   const [stored, setStored] = useState<boolean | null>(null);
   const [draft, setDraft] = useState("");
   const [visible, setVisible] = useState(false);
@@ -73,7 +74,7 @@ function SecretField({ cameraId, notify, onStored }: { cameraId: string; notify:
   return (
     <label className="field wide">
       <span>
-        Пароль {stored ? <b className="tag">в связке ключей</b> : stored === false ? <b className="tag muted">не задан</b> : null}
+        {label} {stored ? <b className="tag">в связке ключей</b> : stored === false ? <b className="tag muted">не задан</b> : null}
       </span>
       <div className="input-action">
         <input
@@ -262,7 +263,7 @@ function ReticleEditor({ reticles, onChange, linked, onLinkedChange, bothLabel }
   );
 }
 
-export function CameraDrawer({ camera, side, label, otherLabel, probe, video, streaming, onStreamingChange, onRestartStream, found, discovering, onDiscover, onPick, otherIp, reticlesLinked, onClose, onChange, onReticlesChange, onReticlesLinkedChange, onProbe, notify }: {
+export function CameraDrawer({ camera, side, label, otherLabel, probe, video, streaming, onStreamingChange, onRestartStream, found, discovering, onDiscover, onPick, otherIp, thermal, reticlesLinked, onClose, onChange, onReticlesChange, onReticlesLinkedChange, onProbe, notify }: {
   camera: CameraConfig;
   side: "left" | "right";
   label: string;
@@ -278,6 +279,8 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
   onPick: (camera: FoundCamera) => void;
   /** Address of the other camera slot, to mark it in the found list. */
   otherIp: string;
+  /** Last temperatures of this camera (thermal camera only). */
+  thermal: ThermalReadings | null;
   reticlesLinked: boolean;
   onClose: () => void;
   onChange: (patch: Partial<CameraConfig>) => void;
@@ -330,7 +333,12 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
               <span>Логин</span>
               <input value={camera.username} autoComplete="off" spellCheck={false} onChange={(event) => onChange({ username: event.target.value })} />
             </label>
-            <SecretField cameraId={camera.id} notify={notify} onStored={onRestartStream} />
+            <SecretField cameraId={camera.id} notify={notify} onStored={() => { onRestartStream(); void thermalReset(camera.id); }} />
+            {camera.id === "camera2" && (
+              // Dahua-family firmware keeps ONVIF users apart from web users: the HTTP API (temperatures)
+              // checks the web account, which may have another password. Stored as «<camera>-web».
+              <SecretField cameraId={`${camera.id}-web`} label="Пароль веб-интерфейса" notify={notify} onStored={() => void thermalReset(camera.id)} />
+            )}
             <div className="setting-line">
               <span>
                 Путь потока по ONVIF <small>{camera.streamAuto ? "камера сообщает его сама при каждом подключении" : "путь задан вручную"}</small>
@@ -407,6 +415,23 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
             bothLabel={`${label} и ${otherLabel}`}
           />
         </Section>
+
+        {camera.id === "camera2" && (
+          <Section
+            title="Тепловизор"
+            badge={`${camera.thermal.spots.filter((spot) => spot.enabled).length}/3${thermal?.error ? " · ошибка" : ""}`}
+            open={open === "thermal"}
+            onToggle={() => toggle("thermal")}
+          >
+            <ThermalEditor
+              camera={camera}
+              thermal={camera.thermal}
+              readings={thermal}
+              onChange={(next) => onChange({ thermal: next })}
+              onRetry={() => void thermalReset(camera.id)}
+            />
+          </Section>
+        )}
 
         <Section title="Отображение" open={open === "display"} onToggle={() => toggle("display")}>
           <div className="setting-line">

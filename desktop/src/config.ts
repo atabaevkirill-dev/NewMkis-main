@@ -7,8 +7,10 @@ import type {
   ReticleConfig,
   ReticleStyle,
   RockingProfile,
+  ThermalConfig,
   VideoStats,
 } from "./types";
+import { PALETTES, defaultThermal } from "./thermal";
 
 export const SCHEMA_VERSION = 4;
 
@@ -92,9 +94,12 @@ export function defaultReticles(): ReticleConfig[] {
 export function createDefaultConfig(): AppConfig {
   const camera = (id: CameraConfig["id"], name: string, ip: string, streamPath: string, profile: string): CameraConfig => ({
     id, name, ip, onvifPort: 80, rtspPort: 554, streamAuto: true, streamPath, username: "admin", profile, autoConnect: true, osd: false, zoomStepPercent: 0.1, focusStepPercent: 2, reticles: defaultReticles(),
+    // Measuring points and frame extremes are on by default only for the thermal camera.
+    thermal: defaultThermal(id === "camera2"),
   });
   return {
     schemaVersion: SCHEMA_VERSION,
+    view: "both",
     productTitle: "",
     // Stream paths come from the cameras over ONVIF; a stored path is only the fallback. CAM 01 is a Uniview
     // UV-ZNH2130M; CAM 02 is whichever thermal camera is fitted (192.168.1.108 is the Dahua-family factory address).
@@ -126,7 +131,7 @@ export function createDefaultConfig(): AppConfig {
       pauseSeconds: 1,
       smoothMotion: true,
     })),
-    recording: { camera1: true, camera2: true, directory: "", format: "mp4", layout: "separate", splitReticles: true, stopAfterMinutes: 0, segmentMinutes: 30, includeMetadata: true, includeEncryptedSecrets: false },
+    recording: { camera1: true, camera2: true, directory: "", format: "mp4", layout: "separate", splitReticles: true, splitThermal: true, stopAfterMinutes: 0, segmentMinutes: 30, includeMetadata: true, includeEncryptedSecrets: false },
     report: { serialNumber: "", operator: "" },
     alignment: { enabled: false, tolerancePx: 3, stableMs: 1200 },
   };
@@ -166,10 +171,33 @@ function normalizeReticle(defaults: ReticleConfig, stored: unknown): ReticleConf
   };
 }
 
+const THERMAL_UNITS: ThermalConfig["unit"][] = ["camera", "celsius", "fahrenheit"];
+
+function normalizeThermal(defaults: ThermalConfig, stored: unknown): ThermalConfig {
+  const thermal = mergeShape(defaults, stored);
+  const spots = isRecord(stored) && Array.isArray(stored.spots) ? stored.spots : [];
+  return {
+    ...thermal,
+    palette: PALETTES.some((palette) => palette.id === thermal.palette) ? thermal.palette : defaults.palette,
+    unit: THERMAL_UNITS.includes(thermal.unit) ? thermal.unit : defaults.unit,
+    spots: defaults.spots.map((spot, index) => {
+      const merged = mergeShape(spot, spots[index]);
+      return { enabled: merged.enabled, x: clamp(merged.x, [0, 1]), y: clamp(merged.y, [0, 1]) };
+    }),
+  };
+}
+
 function normalizeCamera(defaults: CameraConfig, stored: unknown): CameraConfig {
   const camera = mergeShape(defaults, stored);
   const reticles = isRecord(stored) && Array.isArray(stored.reticles) ? stored.reticles : [];
-  return { ...camera, id: defaults.id, zoomStepPercent: clamp(camera.zoomStepPercent, LENS_STEP_LIMITS), focusStepPercent: clamp(camera.focusStepPercent, LENS_STEP_LIMITS), reticles: defaults.reticles.map((reticle, index) => normalizeReticle(reticle, reticles[index])) };
+  return {
+    ...camera,
+    id: defaults.id,
+    zoomStepPercent: clamp(camera.zoomStepPercent, LENS_STEP_LIMITS),
+    focusStepPercent: clamp(camera.focusStepPercent, LENS_STEP_LIMITS),
+    reticles: defaults.reticles.map((reticle, index) => normalizeReticle(reticle, reticles[index])),
+    thermal: normalizeThermal(defaults.thermal, isRecord(stored) ? stored.thermal : undefined),
+  };
 }
 
 function normalizeModules(stored: unknown): DeviceModule[] {
@@ -228,6 +256,7 @@ export function migrateConfig(stored: unknown): AppConfig {
   // Only fragmented MP4 is implemented; an older «mkv» choice would otherwise look honoured.
   config.recording.format = "mp4";
   if (!["separate", "split", "both"].includes(config.recording.layout)) config.recording.layout = "separate";
+  if (!["both", "camera1", "camera2"].includes(config.view)) config.view = "both";
   config.recording.stopAfterMinutes = Math.round(clamp(config.recording.stopAfterMinutes, [0, 1440]));
   config.recording.includeEncryptedSecrets = false;
   config.schemaVersion = SCHEMA_VERSION;

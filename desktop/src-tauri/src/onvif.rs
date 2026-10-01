@@ -194,7 +194,7 @@ fn security_header(creds: &Credentials, clock_offset: i64) -> String {
     )
 }
 
-fn dechunk(body: &[u8]) -> Vec<u8> {
+pub(crate) fn dechunk(body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(body.len());
     let mut rest = body;
     while let Some(line_end) = rest.windows(2).position(|pair| pair == b"\r\n") {
@@ -231,7 +231,7 @@ impl SoapError {
 
 /// True once a whole HTTP response is buffered. Cameras that ignore `Connection: close` keep the
 /// socket open, and waiting for them to close it cost a full read timeout on every lens command.
-fn response_complete(response: &[u8]) -> bool {
+pub(crate) fn response_complete(response: &[u8]) -> bool {
     let Some(split) = response.windows(4).position(|window| window == b"\r\n\r\n") else { return false };
     let head = String::from_utf8_lossy(&response[..split]).to_ascii_lowercase();
     let body = &response[split + 4..];

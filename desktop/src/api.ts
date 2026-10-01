@@ -2,7 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { createDefaultConfig, migrateConfig, moduleName } from "./config";
-import type { AppConfig, CameraConfig, FoundCamera, ProbeResult, ProbeTarget, RecordingEvent, RockingEvent, RockingProfile, StreamEvent } from "./types";
+import type { AppConfig, CameraConfig, FoundCamera, MeasureParams, ProbeResult, ProbeTarget, RecordingEvent, RockingEvent, RockingProfile, StreamEvent } from "./types";
 
 export type JogDirection = "left" | "right" | "up" | "down";
 
@@ -116,6 +116,36 @@ export async function cameraLensStep(camera: CameraConfig, mode: "zoom" | "focus
   await invoke("camera_lens_step", {
     cameraId: camera.id, ip: camera.ip, port: camera.onvifPort, username: camera.username, mode, steps, stepPercent: mode === "zoom" ? camera.zoomStepPercent : camera.focusStepPercent,
   });
+}
+
+/**
+ * Temperatures (°C) of points given as fractions of the frame, read from the camera's radiometric
+ * HTTP API (web password from the keychain). After a refused password or a camera without radiometry
+ * it fails at once without asking the camera, until `thermalReset`.
+ */
+export async function thermalMeasure(camera: CameraConfig, points: [number, number][]): Promise<number[]> {
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  return invoke<number[]>("thermal_measure", {
+    cameraId: camera.id, ip: camera.ip, port: camera.onvifPort, username: camera.username, points, unit: camera.thermal.unit,
+  });
+}
+
+/** The camera's measuring parameters (emissivity, distance, reflected and air temperature, …). */
+export async function thermalParamsGet(camera: CameraConfig): Promise<MeasureParams> {
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  return invoke<MeasureParams>("thermal_params_get", { cameraId: camera.id, ip: camera.ip, port: camera.onvifPort, username: camera.username });
+}
+
+/** Writes the given parameters into the camera; returns what it holds afterwards. */
+export async function thermalParamsSet(camera: CameraConfig, params: Partial<MeasureParams>): Promise<MeasureParams> {
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  return invoke<MeasureParams>("thermal_params_set", { cameraId: camera.id, ip: camera.ip, port: camera.onvifPort, username: camera.username, params });
+}
+
+/** Lets the next measurement ask the camera again, e.g. after a password was saved. */
+export async function thermalReset(cameraId: CameraConfig["id"]): Promise<void> {
+  if (!inTauri()) return;
+  await invoke("thermal_reset", { cameraId });
 }
 
 const STREAM_STATES = ["connecting", "playing", "error"] as const;

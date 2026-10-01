@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { AlignCenter, ArrowLeftRight, CircleDot, Crosshair, GripVertical, PanelTopOpen, Pencil, Save, SlidersHorizontal, Square } from "lucide-react";
+import { AlignCenter, ArrowLeftRight, CircleDot, Columns2, Crosshair, GripVertical, PanelTopOpen, Pencil, Save, SlidersHorizontal, Square } from "lucide-react";
 import { version } from "../package.json";
 import { discoverCameras, inTauri, loadConfig, onRecordingState, onRockingState, persistConfig, printPage, probeModules, startRecording, stopRecording } from "./api";
 import { lensStep } from "./lens";
@@ -12,8 +12,10 @@ import { ReticleLayer } from "./Reticle";
 import { buildReport, reportFileStamp, testKey } from "./report";
 import { SystemDrawer, type SystemTab } from "./SystemDrawer";
 import { useJog, type JogControl } from "./useJog";
-import type { AppConfig, CameraConfig, FoundCamera, ModuleView, Notify, ProbeResult, RecordingEvent, ReticleConfig, RockingEvent, TestRecord, VideoStats } from "./types";
+import type { AppConfig, CameraConfig, FoundCamera, ModuleView, Notify, ProbeResult, RecordingEvent, ReticleConfig, RockingEvent, TestRecord, ThermalReadings, ThermalSpot, VideoStats, VideoView } from "./types";
 import { VideoSurface } from "./VideoSurface";
+import { PaletteFilters, ThermalLayer } from "./ThermalLayer";
+import { paletteFilter } from "./thermal";
 import { Countdown } from "./ui";
 import { SplitRecorder, type SplitSource, type SplitStatus } from "./splitRecorder";
 import { axisError, signed, within, type AxisError, type TargetFix } from "./alignment";
@@ -44,8 +46,10 @@ function noSignalReason(video: VideoStats): string {
   }
 }
 
-const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, restartKey, video, onVideoStats, measure, onTarget }: {
+const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, restartKey, video, onVideoStats, measure, onTarget, onThermalSpots, onThermal, hidden }: {
   camera: CameraConfig;
+  /** Not shown (the other camera has the whole stage); the stream keeps running. */
+  hidden: boolean;
   label: string;
   jog: JogControl;
   streaming: boolean;
@@ -54,6 +58,8 @@ const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, resta
   onVideoStats: (id: CameraConfig["id"], stats: VideoStats) => void;
   measure: boolean;
   onTarget: (id: CameraConfig["id"], fix: TargetFix | null) => void;
+  onThermalSpots: (id: CameraConfig["id"], spots: ThermalSpot[]) => void;
+  onThermal: (id: CameraConfig["id"], readings: ThermalReadings | null) => void;
 }) {
   const paneRef = useRef<HTMLDivElement>(null);
   const cameraRef = useRef(camera);
@@ -61,6 +67,13 @@ const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, resta
   const rightMouseDown = useRef(false);
   const indicatorTimer = useRef<number | null>(null);
   const [lensIndicator, setLensIndicator] = useState("");
+  const indicate = useCallback((message: string, durationMs = 700) => {
+    setLensIndicator(message);
+    if (indicatorTimer.current !== null) window.clearTimeout(indicatorTimer.current);
+    indicatorTimer.current = window.setTimeout(() => setLensIndicator(""), durationMs);
+  }, []);
+  // CAM 02 is the thermal camera: palettes and temperatures belong to it.
+  const thermal = camera.id === "camera2";
 
   // Native listener: React registers wheel as passive, so preventDefault (no page zoom) needs this.
   useEffect(() => {
@@ -68,11 +81,7 @@ const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, resta
     if (!pane) return;
     // Touchpads and smooth-scrolling wheels send small deltas: they add up to one step per notch.
     let smallDeltas = 0;
-    const show = (message: string) => {
-      setLensIndicator(message);
-      if (indicatorTimer.current !== null) window.clearTimeout(indicatorTimer.current);
-      indicatorTimer.current = window.setTimeout(() => setLensIndicator(""), 700);
-    };
+    const show = (message: string) => indicate(message);
     const onWheel = (event: WheelEvent) => {
       if ((event.target as HTMLElement).closest(".video-dpad")) return;
       event.preventDefault();
@@ -95,20 +104,31 @@ const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, resta
       pane.removeEventListener("wheel", onWheel);
       if (indicatorTimer.current !== null) window.clearTimeout(indicatorTimer.current);
     };
-  }, []);
+  }, [indicate]);
 
   return (
     <div
       ref={paneRef}
-      className="video-pane"
+      className={`video-pane ${hidden ? "hidden" : ""}`}
       onContextMenu={(event) => event.preventDefault()}
       onPointerDown={(event) => { if (event.button === 2) rightMouseDown.current = true; }}
       onPointerUp={(event) => { if (event.button === 2) rightMouseDown.current = false; }}
       onPointerCancel={() => { rightMouseDown.current = false; }}
       onPointerLeave={() => { rightMouseDown.current = false; }}
     >
-      <VideoSurface camera={camera} active={streaming} restartKey={restartKey} onStats={onVideoStats} measure={measure} onTarget={onTarget} />
+      <VideoSurface camera={camera} active={streaming} restartKey={restartKey} onStats={onVideoStats} measure={measure} onTarget={onTarget} palette={thermal ? camera.thermal.palette : "camera"} />
       {video.live && <ReticleLayer reticles={camera.reticles} />}
+      {video.live && thermal && (
+        <ThermalLayer
+          camera={camera}
+          frameWidth={video.width}
+          frameHeight={video.height}
+          paneRef={paneRef}
+          onSpotsChange={(spots) => onThermalSpots(camera.id, spots)}
+          onReadings={onThermal}
+          indicate={(message) => indicate(message, 2500)}
+        />
+      )}
       {camera.osd && (
         <div className="camera-osd"><strong>{label}</strong><span className="fps">{video.fps !== null ? Math.round(video.fps) : "—"} FPS</span><span>ONVIF —</span></div>
       )}
@@ -410,7 +430,10 @@ export default function App() {
               const canvas = document.querySelector<HTMLCanvasElement>(`canvas.video-canvas[data-camera="${id}"]`);
               const latest = configRef.current;
               const camera = latest.cameras.find((item) => item.id === id);
-              return canvas ? { canvas, reticles: latest.recording.splitReticles && camera ? camera.reticles : null } : null;
+              const thermalCamera = camera && id === "camera2" ? camera : null;
+              const filter = thermalCamera ? paletteFilter(thermalCamera.thermal.palette) : null;
+              const thermal = thermalCamera && latest.recording.splitThermal ? { config: thermalCamera.thermal, readings: thermalReadingsRef.current[id] } : null;
+              return canvas ? { canvas, filter, thermal, reticles: latest.recording.splitReticles && camera ? camera.reticles : null } : null;
             };
             // Same order as on screen: after a swap CAM 02 is on the left.
             const recorder = new SplitRecorder(
@@ -574,6 +597,17 @@ export default function App() {
     setVideo((current) => ({ ...current, [id]: stats }));
   }, []);
 
+  /** Last temperatures from each camera, shown on the video and in its drawer. */
+  const [thermalReadings, setThermalReadings] = useState<Record<CameraConfig["id"], ThermalReadings | null>>({ camera1: null, camera2: null });
+  const thermalReadingsRef = useRef(thermalReadings);
+  thermalReadingsRef.current = thermalReadings;
+  const onThermal = useCallback((id: CameraConfig["id"], readings: ThermalReadings | null) => {
+    setThermalReadings((current) => ({ ...current, [id]: readings }));
+  }, []);
+  const onThermalSpots = useCallback((id: CameraConfig["id"], spots: ThermalSpot[]) => {
+    setConfig((current) => ({ ...current, cameras: current.cameras.map((camera) => (camera.id === id ? { ...camera, thermal: { ...camera.thermal, spots } } : camera)) as [CameraConfig, CameraConfig] }));
+  }, []);
+
   // First search as soon as the stored config is in, so the camera drawers can offer it right away.
   const loaded = savedSnapshot !== null;
   useEffect(() => {
@@ -718,8 +752,12 @@ export default function App() {
       onVideoStats={onVideoStats}
       measure={config.alignment.enabled}
       onTarget={onTarget}
+      onThermalSpots={onThermalSpots}
+      onThermal={onThermal}
+      hidden={config.view !== "both" && config.view !== camera.id}
     />
   );
+  const setView = (view: VideoView) => setConfig((current) => ({ ...current, view }));
   const drawerStream = (camera: CameraConfig) => ({
     video: video[camera.id],
     streaming: streaming(camera),
@@ -730,6 +768,7 @@ export default function App() {
     onDiscover: () => void discover().catch((error) => notify(`Поиск камер: ${String(error)}`, "error")),
     onPick: (item: FoundCamera) => void adoptCamera(camera.id, item),
     otherIp: config.cameras.find((item) => item.id !== camera.id)?.ip ?? "",
+    thermal: thermalReadings[camera.id],
   });
   const toggleDrawer = (id: Exclude<Drawer, null>) => setDrawer((current) => (current === id ? null : id));
   const openSystem = (tab: SystemTab) => {
@@ -748,6 +787,11 @@ export default function App() {
         <ProductTitle value={config.productTitle} onChange={(productTitle) => setConfig((current) => ({ ...current, productTitle }))} />
         {!inTauri() && <span className="mode-badge" title="Команды оборудованию не отправляются">БРАУЗЕРНЫЙ РЕЖИМ</span>}
         <div className="top-spacer" />
+        <div className="view-switch" role="group" aria-label="Какие камеры показывать">
+          <button className={`blue ${config.view === "camera1" ? "active" : ""}`} onClick={() => setView("camera1")} type="button" title={`Показывать только ${label1}`}>{label1}</button>
+          <button className={config.view === "both" ? "active" : ""} onClick={() => setView("both")} type="button" title="Показывать обе камеры"><Columns2 /></button>
+          <button className={`amber ${config.view === "camera2" ? "active" : ""}`} onClick={() => setView("camera2")} type="button" title={`Показывать только ${label2}`}>{label2}</button>
+        </div>
         <nav className="top-actions">
           <button className={config.alignment.enabled ? "active" : ""} onClick={() => setConfig((current) => ({ ...current, alignment: { ...current.alignment, enabled: !current.alignment.enabled } }))} type="button" title="Режим сведения осей">
             <AlignCenter /> Сведение
@@ -811,7 +855,7 @@ export default function App() {
             notify={notify}
           />
         )}
-        <div className="video-stage" ref={stageRef} style={{ "--split": `${split}%` } as CSSProperties}>
+        <div className={`video-stage ${config.view !== "both" ? "single" : ""}`} ref={stageRef} style={{ "--split": `${split}%` } as CSSProperties}>
           {pane(left)}
           <div className="split">
             <button className="split-grip" onPointerDown={beginSplitDrag} onDoubleClick={() => setSplit(50)} type="button" title="Перетащите · двойной клик — поровну">
@@ -845,6 +889,7 @@ export default function App() {
       <StatusBar config={config} modules={modules} probes={probes} video={video} alignment={alignment} rocking={rocking} notice={notice} />
     </main>
     <PrintReport model={reportModel} />
+    <PaletteFilters />
     </>
   );
 }

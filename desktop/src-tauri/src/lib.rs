@@ -3,6 +3,7 @@ mod mp4fix;
 mod onvif;
 mod record;
 mod split;
+mod thermal;
 mod video;
 
 use serde::{Deserialize, Serialize};
@@ -906,6 +907,7 @@ pub fn run() {
         .manage(platform)
         .manage(Arc::new(video::Streams::default()))
         .manage(lens)
+        .manage(Arc::new(thermal::Thermal::default()))
         .manage(Arc::new(split::SplitFiles::default()))
         .plugin(tauri_plugin_dialog::init())
         .setup(move |_app| {
@@ -927,6 +929,10 @@ pub fn run() {
             print_page,
             diag_log,
             onvif::camera_lens_step,
+            thermal::thermal_measure,
+            thermal::thermal_reset,
+            thermal::thermal_params_get,
+            thermal::thermal_params_set,
             discovery::discover_cameras,
             video::camera_stream_start,
             video::camera_stream_stop,

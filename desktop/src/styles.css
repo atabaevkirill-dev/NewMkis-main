@@ -213,6 +213,27 @@ input[type="color"] { width: 24px; height: 20px; padding: 1px; border-radius: 3p
 .no-signal.error span { color: var(--danger-text); }
 .no-signal code { max-width: 100%; overflow: hidden; color: var(--faint); font: inherit; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- thermal overlay ---------- */
+.palette-filters { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
+.thermal-layer { position: absolute; z-index: 4; font-variant-numeric: tabular-nums; }
+.thermal-layer .spot, .thermal-layer .extreme { position: absolute; width: 24px; height: 24px; translate: -50% -50%; }
+.thermal-layer .spot { padding: 0; border: 0; background: transparent; cursor: move; touch-action: none; }
+.thermal-layer .spot.dragging { cursor: grabbing; }
+.spot-cross { display: block; width: 24px; height: 24px; overflow: visible; }
+.spot-cross path { fill: none; stroke: #fff; stroke-width: 1.5; }
+.spot-cross path.halo { stroke: rgba(0, 0, 0, .75); stroke-width: 3.5; }
+.thermal-layer .spot span, .thermal-layer .extreme span { position: absolute; left: 17px; top: -13px; padding: 1px 4px; border-radius: 2px; background: rgba(4, 6, 8, .62); color: #fff; font: 600 10px var(--mono); white-space: nowrap; pointer-events: none; }
+.thermal-layer .extreme { pointer-events: none; }
+.thermal-layer .extreme i { position: absolute; inset: 5px; border: 2px solid; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0, 0, 0, .7), inset 0 0 0 1px rgba(0, 0, 0, .7); }
+.thermal-layer .extreme.hot i { border-color: #ff5a3c; }
+.thermal-layer .extreme.hot span { color: #ffb4a4; }
+.thermal-layer .extreme.cold i { border-color: #6cb6ff; }
+.thermal-layer .extreme.cold span { color: #b8dcff; }
+.thermal-scale { position: absolute; top: 50%; left: 8px; height: 56%; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; translate: 0 -50%; pointer-events: none; }
+.thermal-scale i { flex: 1; width: 10px; border: 1px solid rgba(255, 255, 255, .55); box-shadow: 0 0 0 1px rgba(0, 0, 0, .6); }
+.thermal-scale b { padding: 1px 4px; border-radius: 2px; background: rgba(4, 6, 8, .62); color: #fff; font: 600 10px var(--mono); white-space: nowrap; }
+.thermal-error { position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px); overflow: hidden; padding: 3px 6px; border-radius: 3px; background: rgba(7, 9, 12, .78); color: var(--danger-text); font: 500 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+
 .split { position: absolute; top: 0; bottom: 0; left: var(--split, 50%); z-index: 8; width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
 .split::before { content: ""; position: absolute; top: 0; bottom: 0; left: -.5px; width: 1px; background: #262c35; }
 .split button { position: relative; width: 20px; display: grid; place-items: center; padding: 0; border: 1px solid #343a44; border-radius: 5px; background: #0d1015; color: #a3aab4; opacity: .5; transition: opacity .15s; }
@@ -280,6 +301,37 @@ input[type="color"] { width: 24px; height: 20px; padding: 1px; border-radius: 3p
 .reticle-actions { display: flex; align-items: center; justify-content: space-between; }
 .reticle-actions button { height: 22px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: #161a21; color: #aab2bc; font-size: 10px; }
 .reticle-actions button svg { width: 11px; }
+
+.thermal-editor { display: flex; flex-direction: column; gap: 5px; }
+.palette-strip { height: 8px; margin-left: 64px; border: 1px solid var(--line); border-radius: 2px; }
+.spot-row { min-height: 24px; display: grid; grid-template-columns: 12px 22px minmax(0, 1fr) auto auto; align-items: center; gap: 6px; color: #bdc3cc; font: 500 10px var(--mono); }
+.spot-row > svg { width: 12px; color: var(--muted); }
+.spot-row code { color: #d7dce3; font: inherit; }
+.spot-row button { height: 20px; display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; background: #161a21; color: #aab2bc; font-size: 9px; }
+.spot-row button svg { width: 10px; }
+.thermal-status { display: flex; align-items: flex-start; gap: 6px; }
+.thermal-status .hint { flex: 1; }
+.thermal-status button { flex: none; height: 20px; padding: 0 7px; border: 1px solid var(--line); border-radius: 4px; background: #161a21; color: #aab2bc; font-size: 9px; }
+.camera-params { display: flex; flex-direction: column; gap: 4px; padding: 7px 0 2px; border-top: 1px solid var(--line-soft); }
+.params-head { display: flex; align-items: center; justify-content: space-between; color: #7c8591; font: 500 9px var(--mono); letter-spacing: .04em; }
+.params-head button { height: 18px; padding: 0 7px; border: 1px solid var(--line); border-radius: 3px; background: #151922; color: #aab2bd; font: 500 9px var(--mono); }
+.param-row { display: grid; grid-template-columns: minmax(0, 1fr) 96px; align-items: center; gap: 6px; color: #bdc3cc; font-size: 10px; }
+.param-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.param-row.changed > span { color: #f5c27c; }
+.param-row .number-field input { width: 100%; }
+.emissivity-presets { height: 22px; font-size: 10px; }
+.params-actions { display: flex; gap: 5px; }
+.params-actions button { height: 22px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: #161a21; color: #c9d0d8; font-size: 10px; }
+
+/* ---------- which cameras are shown ---------- */
+.view-switch { display: flex; align-items: center; gap: 1px; padding: 2px; margin-right: 4px; border: 1px solid var(--line-soft); border-radius: 6px; }
+.top-bar .view-switch button { height: 22px; max-width: 86px; padding: 0 8px; overflow: hidden; border-radius: 4px; font: 600 10px var(--mono); letter-spacing: .04em; text-overflow: ellipsis; }
+.top-bar .view-switch button svg { width: 13px; height: 13px; flex: none; }
+.top-bar .view-switch button.active { color: var(--text); background: var(--surface-3); border-color: var(--line); }
+.top-bar .view-switch button.blue.active { color: var(--blue); background: var(--blue-soft); border-color: rgba(77, 163, 255, .35); }
+.top-bar .view-switch button.amber.active { color: var(--amber); background: var(--amber-soft); border-color: rgba(240, 166, 74, .35); }
+.video-stage.single { grid-template-columns: minmax(0, 1fr); }
+.video-stage.single .split, .video-pane.hidden { display: none; }
 
 /* ---------- status bar ---------- */
 .status-bar { height: var(--status-h); flex: 0 0 var(--status-h); display: flex; align-items: stretch; border-top: 1px solid var(--line); background: #0a0d11; font: 500 10px var(--mono); overflow: hidden; }

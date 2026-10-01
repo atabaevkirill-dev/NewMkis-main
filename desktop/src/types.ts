@@ -70,6 +70,53 @@ export interface ReticleConfig {
   outline: boolean;
 }
 
+export type PaletteId = "camera" | "whiteHot" | "blackHot" | "ironbow" | "rainbow" | "rainbowHc" | "arctic" | "iceFire" | "redHot";
+
+/** A measuring point placed by the operator; position in fractions of the video frame (0…1). */
+export interface ThermalSpot {
+  enabled: boolean;
+  x: number;
+  y: number;
+}
+
+/** How to read the numbers of the camera API: as it labels them, or as °C / °F regardless. */
+export type ThermalUnit = "camera" | "celsius" | "fahrenheit";
+
+export interface ThermalConfig {
+  /** False-colour palette applied to the camera picture; `camera` shows it as the camera sends it. */
+  palette: PaletteId;
+  /** Palette scale over the picture, labelled with the hottest and coldest temperature of the frame. */
+  colorBar: boolean;
+  /** Exactly three measuring points. */
+  spots: ThermalSpot[];
+  /** Marker following the hottest point of the frame. */
+  hotSpot: boolean;
+  /** Marker following the coldest point of the frame. */
+  coldSpot: boolean;
+  unit: ThermalUnit;
+}
+
+/** Measuring parameters the thermal camera keeps; `null` where the camera has no such field. */
+export interface MeasureParams {
+  emissivity: number | null;
+  /** Metres. */
+  distance: number | null;
+  reflectedTemperature: number | null;
+  atmosphericTemperature: number | null;
+  transmissivity: number | null;
+  /** Percent. */
+  humidity: number | null;
+}
+
+/** Last temperatures (°C) reported by the camera; `null` where nothing was measured. */
+export interface ThermalReadings {
+  /** One entry per spot slot. */
+  spots: (number | null)[];
+  hot: { x: number; y: number; value: number | null } | null;
+  cold: { x: number; y: number; value: number | null } | null;
+  error: string | null;
+}
+
 export interface CameraConfig {
   id: "camera1" | "camera2";
   name: string;
@@ -89,6 +136,8 @@ export interface CameraConfig {
   /** One focus step, percent of the focus range. */
   focusStepPercent: number;
   reticles: ReticleConfig[];
+  /** Thermal imaging: palette, measuring points and frame extremes (used by the thermal camera). */
+  thermal: ThermalConfig;
 }
 
 export interface RockingProfile {
@@ -122,6 +171,8 @@ export interface RecordingConfig {
   layout: "separate" | "split" | "both";
   /** Burn the reticles into the split recording. */
   splitReticles: boolean;
+  /** Burn the thermal overlay (measuring points, extremes, palette scale) into the split recording. */
+  splitThermal: boolean;
   /** Stop recording automatically after this many minutes; 0 = until stopped by hand. */
   stopAfterMinutes: number;
   segmentMinutes: number;
@@ -152,8 +203,12 @@ export interface AlignmentConfig {
   stableMs: number;
 }
 
+/** Which video panes are shown; a hidden camera keeps streaming (recording, measuring). */
+export type VideoView = "both" | "camera1" | "camera2";
+
 export interface AppConfig {
   schemaVersion: number;
+  view: VideoView;
   /** Full name of the installation shown next to the app name. */
   productTitle: string;
   cameras: [CameraConfig, CameraConfig];

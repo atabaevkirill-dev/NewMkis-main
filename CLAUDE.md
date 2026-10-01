@@ -24,6 +24,7 @@ Units are swapped on the stand: other cameras and platforms appear at the same a
 |---|---|---|
 | CAM 01 Uniview UV-ZNH2130M | `192.168.1.68` | ONVIF path `/Stream/Live/101?…` (1280×720 H.264), `/media/video1` also works. Zoom by absolute position (grid ≈ 1/3300 of the range), focus by pulses (Imaging continuous speed range −7…7) |
 | CAM 02 thermal, Dahua family («IP_Camera») | `192.168.1.108` | 640×512 H.264, ONVIF path `/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif`; zoom by position, relative focus |
+| CAM 02 since v0.2.5: OEM «General IP Camera», serial GD0309PAZ00156 | `192.168.1.107` | Dahua-family firmware 1.030, iRay FT640 core, radiometric: `RadiometryManager.cgi` point temperatures (30–60 ms, 0.1°). Web password differs from the ONVIF one (keychain `camera2-web`). Config: `TemperatureUnit=Centigrade`, `TempRangeMode=High`, `TemperEnable=false`, ε 0.98, 5.5 m; yet a 19–20 °C room reads 66–68 |
 | CAM 02 alternative: thermal via Beward B102S | `192.168.1.99` | RTSP `/av0_0`. Clock stuck around 2010. Relative zoom/focus only (`GetStatus` fails), every lens command answers after ≈ 1 s |
 | TL.0009 | `192.168.1.115:9760` | service protocol answers only on 9760 |
 
@@ -49,6 +50,7 @@ Ignored tests in `desktop/src-tauri`, run with `cargo test --lib <name> -- --ign
 | `depacketize_real_stream` | `MKIS_RTP=camera2@rtsp://192.168.1.99:554/av0_0` | 90 s through the depacketizer, first error if any |
 | `dump_raw_rtp` | `MKIS_RTP` | 60 s of raw RTP, looks for `00 00 00 xx` |
 | `real_file` | `MKIS_DEFRAG=<copy.mp4>` | re-indexes a recording in place: use a copy |
+| `real_radiometry` | `MKIS_HTTP=camera2-web@192.168.1.107:80`, optional `MKIS_PATHS` (paths joined by `\|`), `MKIS_USER`, `MKIS_SAVE` (directory for binary answers such as `snapshot.cgi`) | read-only HTTP API probe; stops at the first refusal |
 
 Measure before changing: timings and positions read from the devices settled every lens and stream question in this project.
 
@@ -57,5 +59,8 @@ Measure before changing: timings and positions read from the devices settled eve
 - After a 401 the app stops retrying (stream and lens): Uniview locks the account after a few failures. Never brute-force passwords or stream paths.
 - An RTSP server answers 401 before it looks at the path: without the password, stream paths cannot be probed.
 - Beward's «Incorrect password type» meant a wrong WS-Security timestamp, not a wrong token type.
+- Dahua-family thermal firmware: ONVIF users and web users are separate lists, so a password can work for video and fail on the web interface. A wrong web password is HTTP 200 `Invalid Authority!`, not 401: count every one as a failed login (after five the camera answered 401). A malformed request gets the same answer: the point query needs `coordinate[0]=x&coordinate[1]=y` (0…8191), `coordinate=x,y` is refused.
+- The stand thermal camera's temperatures are labelled `Centigrade` but a 19–20 °C room reads 66–68; its unit, range (high gain) and measurement switch were checked and are not the cause (turning `TemperEnable` on changed nothing and was turned back off). Check against a reference (a hand reads ≈ 93 if the values are °F, ≈ 80 if it is an offset) before choosing the unit in the drawer.
+- The camera's own web pages are static files readable without a password (`/js/set/pages/global.js` etc.): they show which config keys a setting uses and how the camera writes them. Long CGI answers matter: the first `HeatImagingThermometry` read was cut at 1500 characters and hid half the keys, so `real_radiometry` prints everything now.
 - `desktop/src-tauri/vendor/retina` is retina 0.4.20 with one patch (see `vendor/retina/MKIS100TEST.md`); re-apply it when updating retina.
 - The version lives in five places: `desktop/package.json`, `desktop/package-lock.json` (two entries), `desktop/src-tauri/tauri.conf.json`, `desktop/src-tauri/Cargo.toml` and the `oncam-desktop` entry of `desktop/src-tauri/Cargo.lock`.

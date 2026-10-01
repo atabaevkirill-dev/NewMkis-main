@@ -2,7 +2,8 @@ import { memo, useEffect, useRef, useState } from "react";
 import { COARSE_WIDTH, findBlob, refineCentroid, type TargetFix } from "./alignment";
 import { diagLog, inTauri, startCameraStream } from "./api";
 import { OFF_STATS } from "./config";
-import type { CameraConfig, StreamEvent, VideoStats } from "./types";
+import { paletteFilter } from "./thermal";
+import type { CameraConfig, PaletteId, StreamEvent, VideoStats } from "./types";
 
 /**
  * Frames waiting in the decoder beyond this (~2 s) mean it truly cannot keep up: only then drop to the
@@ -22,7 +23,7 @@ const NO_SIGNAL_MS = 2000;
  * Renders one camera stream. Encoded H.264/H.265 frames arrive from the native RTSP client and are
  * decoded by WebCodecs (hardware decoder when available) straight onto the canvas.
  */
-export const VideoSurface = memo(function VideoSurface({ camera, active, restartKey, onStats, measure, onTarget }: {
+export const VideoSurface = memo(function VideoSurface({ camera, active, restartKey, onStats, measure, onTarget, palette = "camera" }: {
   camera: CameraConfig;
   active: boolean;
   /** Changing it reopens the stream, e.g. after the password was changed. */
@@ -31,6 +32,8 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
   /** Search the frames for the hot alignment target. */
   measure: boolean;
   onTarget: (id: CameraConfig["id"], fix: TargetFix | null) => void;
+  /** False-colour palette, applied as a CSS filter: the canvas pixels stay the camera's own for measuring. */
+  palette?: PaletteId;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const onStatsRef = useRef(onStats);
@@ -253,7 +256,7 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
 
   return (
     <>
-      <canvas ref={canvasRef} className="video-canvas" data-camera={id} />
+      <canvas ref={canvasRef} className="video-canvas" data-camera={id} style={{ filter: paletteFilter(palette) ?? undefined }} />
       {marker && <i className="target-marker" style={{ left: marker.left, top: marker.top }} title="Найденная мишень" />}
     </>
   );

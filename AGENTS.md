@@ -11,7 +11,7 @@ ONCAM/MKIS100TEST is an operator workstation for aligning the optical axis of CA
 ## Repository layout
 
 - `desktop/`: the application, Tauri 2 + Rust + React + TypeScript. The former Python/PyQt client was removed in v0.2.0 (see tag `v0.1.0` in git history).
-- `desktop/src-tauri/src/video.rs` (RTSP), `onvif.rs` (zoom/focus, stream address), `discovery.rs` (WS-Discovery), `record.rs` + `split.rs` + `mp4fix.rs` (recording), `desktop/src/VideoSurface.tsx`, `alignment.ts`, `splitRecorder.ts`.
+- `desktop/src-tauri/src/video.rs` (RTSP), `onvif.rs` (zoom/focus, stream address), `discovery.rs` (WS-Discovery), `record.rs` + `split.rs` + `mp4fix.rs` (recording), `thermal.rs` (camera temperatures over HTTP), `desktop/src/VideoSurface.tsx`, `alignment.ts`, `splitRecorder.ts`, `thermal.ts` + `ThermalLayer.tsx` (palettes, measuring points, thermal settings).
 - `desktop/docs/`: TL.0009 service subset and factory protocol, rangefinder and Relay X3 protocols (the latter two are reference material not yet implemented beyond TCP reachability).
 - `desktop/src-tauri/src/lib.rs`: native config (atomic write, corruption recovery), keychain, device probing, persistent TL.0009 service link with jog watchdog, rocking profiles; unit tests with a mock TL.0009.
 - `desktop/src/App.tsx`: cockpit shell — top bar, video stage, status bar.
@@ -26,7 +26,7 @@ ONCAM/MKIS100TEST is an operator workstation for aligning the optical axis of CA
 
 ## Non-negotiable UX rules
 
-1. CAM 01 and CAM 02 form one uninterrupted video surface.
+1. CAM 01 and CAM 02 form one uninterrupted video surface. The operator may show one camera alone (top bar: CAM 01 / both / CAM 02, saved as `view`); the hidden camera keeps streaming, so recording and its overlays go on. Alignment needs both panes shown.
 2. Their divider is draggable; cameras can be swapped.
 3. Left drawer contains CAM 01 settings; right drawer contains CAM 02 settings.
 4. Top drawer contains system summary, TL.0009, tests and recording.
@@ -34,7 +34,7 @@ ONCAM/MKIS100TEST is an operator workstation for aligning the optical axis of CA
 6. No page scrolling. Keep the interface compact and usable at the configured minimum window size.
 7. No green accent. Use neutral white/gray plus blue for CAM 01 and amber for CAM 02.
 8. Persistent telemetry appears only in the bottom status bar. Do not duplicate it in video panes.
-9. Video panes stay clean. Optional camera OSD may show only camera name, FPS and ONVIF state.
+9. Video panes stay clean. Optional camera OSD may show only camera name, FPS and ONVIF state. The thermal pane (CAM 02) may also show the thermal overlay the operator switches on in its drawer: up to three measuring points, the hottest/coldest-point markers and the palette scale. Their temperatures come only from the camera; without an answer they show «—».
 10. D-pad appears on video hover and shows only its buttons, without a titled container.
 11. Wheel over a video pane controls that camera's ONVIF zoom.
 12. Right mouse button + wheel controls that camera's ONVIF focus; suppress the context menu over video.
@@ -44,6 +44,7 @@ ONCAM/MKIS100TEST is an operator workstation for aligning the optical axis of CA
 ## Hardware and protocols
 
 - CAM 01 default: `192.168.1.68`, ONVIF `80`, RTSP `554`.
+- CAM 02 thermal camera on the stand (as of v0.2.5): OEM «General IP Camera» (Dahua-family firmware 1.030, iRay FT640 core, 640×512), radiometric. Its firmware keeps ONVIF users apart from web users: ONVIF/RTSP may accept a password that the web interface and the HTTP API refuse, so the drawer has a separate «Пароль веб-интерфейса». A wrong web password is answered with HTTP 200 `Error … Invalid Authority!` (a malformed request gets the same answer); after five of them the camera answered 401, i.e. locked the web account.
 - CAM 02 default: `192.168.1.108` (Dahua-family factory address), RTSP `554` — whichever thermal camera is fitted: different units are swapped in, and the app finds and adopts them (see below). Seen so far: a Dahua-family thermal ("IP_Camera", 640×512 H.264, ONVIF path `/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif`) and an analogue thermal camera behind a Beward B102S video server (`/av0_0`). The B102S clock is years off; a WS-Security stamp from the PC clock is refused with the misleading fault "Incorrect password type", the camera-clock stamp is accepted. It advertises PTZ and Imaging (relative zoom and focus, both at `/onvif/device_service`); whether they drive the thermal lens depends on how the lens is wired to the encoder.
 - TL.0009 default project profile: `192.168.1.115:9760` (verified on the device: the service protocol answers only on 9760; 9761/9762 accept TCP but stay silent).
 - Rangefinder: `192.168.1.7:20108`.
@@ -78,6 +79,8 @@ Video decoding uses WebCodecs with `hardwareAcceleration: "prefer-software"`: me
 Seeking: recorders write fragmented MP4 while recording (crash-safe) and `src-tauri/src/mp4fix.rs` rewrites each closed MP4 in the background into a regular MP4 with a full index (ftyp+moov+mdat) so Windows players can seek; on failure the fragmented file stays (VLC plays it). Split WebM (only if the webview lacks MP4 MediaRecorder) is not indexed. Recording auto-stop timer: `recording.stopAfterMinutes` (0 = manual). Split recording burns in the reticles when `recording.splitReticles` is on.
 
 Split recording (`desktop/src/splitRecorder.ts` + `src-tauri/src/split.rs`): both panes composed side by side in on-screen order and re-encoded by the webview MediaRecorder (MP4/H.264 when offered, else WebM); chunks are appended natively once a second; files «<product>_<cam>+<cam>_<local time>». It depends on webview timers, so do not minimise the window while it records. Recording layout: separate / split / both. Jog axis inversion (`jog.invertPan`, `jog.invertTilt`) swaps only what the D-pad sends; rocking profiles use absolute angles and are not inverted.
+
+Thermal imaging (CAM 02): false-colour palettes (white/black hot, ironbow, rainbow, rainbow HC, arctic, ice-fire, red hot) are SVG filters applied as CSS `filter` to the video canvas, so the canvas keeps the camera's own white-hot pixels for alignment and extremes; the split recording draws with the same filter. Up to three measuring points (double click places, drag moves, double click removes; positions are fractions of the frame), markers that follow the hottest and coldest point (found in the picture, coarse then full resolution), and a palette scale labelled with those two temperatures. Temperatures come only from the camera: `src-tauri/src/thermal.rs` asks the radiometric HTTP API (`RadiometryManager.cgi?action=getRandomPointTemper&channel=1&coordinate[0]=x&coordinate[1]=y`, 0…8191) twice a second, one request per point (30–60 ms each), with HTTP Digest and the web password (`camera2-web` in the keychain, falling back to the camera password). A refused password or a camera without radiometry stops measuring after one attempt until a password is saved or «Повторить» is pressed (unit test with a refusing mock camera). The stand camera reads 66–68 for a 19–20 °C room although its config says `TemperatureUnit=Centigrade`, `TempRangeMode=High` (high gain, the room-temperature range) and switching `TemperEnable` on changed nothing: either °F-scaled values or an offset of ≈ +46 °C, hence the per-camera unit setting (as labelled / °C / °F); confirm against a reference (a hand reads ≈ 93 if °F, ≈ 80 if offset) before trusting either. The drawer also reads and writes the camera's measuring parameters (`HeatImagingThermometry`: emissivity, distance kept as `ObjectDistance` + `DistanceDecimalPart`, reflected and air temperature, humidity, transmissivity; `configManager.cgi?action=setConfig&HeatImagingThermometry.<key>=<value>` answers `OK`, verified with a same-value write), with typical emissivities of materials. The split recording burns in the thermal overlay (`recording.splitThermal`, drawn by `drawThermalOverlay` like the screen layer).
 
 Not yet implemented end-to-end: MKV recording, encrypted secrets manifest, telemetry in recording metadata, live telemetry polling, protocol-level device test adapters. The UI shows `—` or «не подключено» for these instead of sample values; keep it that way. UI placeholders are not evidence that hardware integration is complete. State this accurately in handoffs.
 

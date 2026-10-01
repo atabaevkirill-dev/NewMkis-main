@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { drawReticles } from "./Reticle";
-import type { ReticleConfig } from "./types";
+import { drawThermalOverlay } from "./thermal";
+import type { ReticleConfig, ThermalConfig, ThermalReadings } from "./types";
 
 /** Encoders the webview may offer, best first; MP4/H.264 plays everywhere, WebM is the fallback. */
 const FORMATS = [
@@ -25,10 +26,14 @@ export interface SplitOpenRequest {
   utcOffsetMinutes: number;
 }
 
-/** One pane: its decoded video canvas and, when they should be burnt in, its reticles. */
+/** One pane: its decoded video canvas, its palette filter and, when they should be burnt in, its reticles. */
 export interface SplitSource {
   canvas: HTMLCanvasElement;
+  /** Canvas `filter` that gives the picture the palette shown on screen, or null. */
+  filter: string | null;
   reticles: ReticleConfig[] | null;
+  /** Thermal overlay to burn in, with the latest temperatures, or null. */
+  thermal: { config: ThermalConfig; readings: ThermalReadings | null } | null;
 }
 
 export interface SplitStatus {
@@ -94,12 +99,17 @@ export class SplitRecorder {
       const scale = Math.min(slot / video.width, height / video.height);
       const w = video.width * scale;
       const h = video.height * scale;
-      context.drawImage(video, x + (slot - w) / 2, (height - h) / 2, w, h);
-      if (!source.reticles) return;
-      // Reticle settings are screen pixels over the displayed video: keep the same size relative to the picture.
+      const left = x + (slot - w) / 2;
+      const top = (height - h) / 2;
+      context.filter = source.filter ?? "none";
+      context.drawImage(video, left, top, w, h);
+      context.filter = "none";
+      // Overlay settings are screen pixels over the displayed video: keep the same size relative to the picture.
       const rect = video.getBoundingClientRect();
       const shown = Math.min(rect.width / video.width, rect.height / video.height);
-      if (shown > 0) drawReticles(context, source.reticles, x + slot / 2, height / 2, scale / shown);
+      if (source.reticles && shown > 0) drawReticles(context, source.reticles, x + slot / 2, height / 2, scale / shown);
+      // A hidden pane has no screen size: its overlay is drawn as for a 540 px high pane.
+      if (source.thermal) drawThermalOverlay(context, source.thermal.config, source.thermal.readings, { x: left, y: top, width: w, height: h }, shown > 0 ? scale / shown : Math.max(1, h / 540));
     };
     place(left, 0, leftWidth);
     place(right, leftWidth, width - leftWidth);

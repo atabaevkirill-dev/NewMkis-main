@@ -461,6 +461,7 @@ function RecordPanel({ config, setConfig, control }: { config: AppConfig; setCon
         {splitWanted && <p className="hint">Сплит: {splitLine(control, bothPlaying)}</p>}
         <p className="hint">Таймер: {control.active && control.endsAt !== null ? <>остановится в {new Date(control.endsAt).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })} · осталось <Countdown endsAt={control.endsAt} /></> : recording.stopAfterMinutes > 0 ? `запись остановится через ${recording.stopAfterMinutes} мин` : "выключен (0) · остановка вручную"}</p>
         {splitWanted && <div className="setting-line"><span>Прицелы в сплит-записи</span><Toggle value={recording.splitReticles} onChange={(splitReticles) => patch({ splitReticles })} /></div>}
+        {splitWanted && <div className="setting-line"><span>Точки и температуры тепловизора в сплит-записи</span><Toggle value={recording.splitThermal} onChange={(splitThermal) => patch({ splitThermal })} /></div>}
       </div>
       <button
         className={`record-start ${control.active ? "active" : ""}`}
