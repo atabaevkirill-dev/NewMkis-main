@@ -547,8 +547,8 @@ export default function App() {
   const [rangingAt, setRangingAt] = useState<number | null>(null);
   const rangingRef = useRef(rangingAt);
   rangingRef.current = rangingAt;
-  // Hiding the rangefinder in the summary stops only what the app does by itself (connecting at start,
-  // ranging after a D-pad move); whatever the operator asks for still works and shows on the crosshair.
+  // Hiding the rangefinder in the summary stops only connecting at start; ranging after a D-pad move has its
+  // own switch, and whatever the operator asks for still works and shows on the crosshair.
   const sendTargetMode = useCallback((automatic: boolean) => {
     const { rangefinderIp: ip, rangefinderPort: port, rangefinder: settings, hiddenModules } = configRef.current;
     if ((automatic && hiddenModules.includes("rangefinder")) || !inTauri()) return;
@@ -601,7 +601,7 @@ export default function App() {
   // A D-pad move the operator ended: range the new aim point once the platform has settled.
   const settleTimer = useRef<number | null>(null);
   const onJogReleased = useCallback(() => {
-    if (!configRef.current.rangefinder.rangeAfterJog || configRef.current.hiddenModules.includes("rangefinder")) return;
+    if (!configRef.current.rangefinder.rangeAfterJog) return;
     if (settleTimer.current !== null) window.clearTimeout(settleTimer.current);
     settleTimer.current = window.setTimeout(() => {
       settleTimer.current = null;
