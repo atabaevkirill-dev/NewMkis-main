@@ -6,6 +6,7 @@ import type {
   ModuleView,
   ReticleConfig,
   ReticleStyle,
+  RangeSightStyle,
   RockingProfile,
   ThermalConfig,
   VideoStats,
@@ -74,6 +75,16 @@ export const MODULE_PRESETS: Record<DeviceKind, { label: string; protocol: strin
 };
 
 export const clamp = (value: number, [min, max]: Range) => Math.min(max, Math.max(min, value));
+/** Must match rangefinder.rs: rate 1–10 Hz, continuous ranging 1–3600 s, range gate 10–20000 m. */
+export const RANGEFINDER_LIMITS = { frequencyHz: [1, 10], continuousSeconds: [5, 3600], gate: [10, 20000] } as const;
+export const SIGHT_LIMITS = { scale: [50, 250], brightness: [30, 100], offset: [-1000, 1000] } as const;
+/** Rangefinder sights with the colour each one starts in. */
+export const SIGHT_STYLES: { value: RangeSightStyle; label: string; color: string; title: string }[] = [
+  { value: "tactical", label: "Тактический", color: "#ffffff", title: "Mil-dot: тонкий крест с разрывом, mil-точки, толстые штанги" },
+  { value: "chevron", label: "Шеврон", color: "#f0a64a", title: "Как ACOG: остриё шеврона в точке прицеливания, риски на штанге" },
+  { value: "box", label: "Рамка", color: "#ffffff", title: "Как в дальномерах: угловая рамка зоны луча, крестик в центре" },
+  { value: "collimator", label: "Коллиматор", color: "#ff3b30", title: "Голографический: светящееся кольцо с точкой" },
+];
 /** Must match `STEP_PERCENT` in onvif.rs. */
 export const LENS_STEP_LIMITS: Range = [0.01, 25];
 export const isIPv4 = (value: string) =>
@@ -93,7 +104,7 @@ export function defaultReticles(): ReticleConfig[] {
 
 export function createDefaultConfig(): AppConfig {
   const camera = (id: CameraConfig["id"], name: string, ip: string, streamPath: string, profile: string): CameraConfig => ({
-    id, name, ip, onvifPort: 80, rtspPort: 554, streamAuto: true, streamPath, username: "admin", profile, autoConnect: true, osd: false, zoomStepPercent: 0.1, focusStepPercent: 2, reticles: defaultReticles(),
+    id, name, ip, onvifPort: 80, rtspPort: 554, streamAuto: true, streamPath, username: "admin", profile, autoConnect: true, osd: false, flipX: false, flipY: false, zoomStepPercent: 0.1, focusStepPercent: 2, reticles: defaultReticles(),
     // Measuring points and frame extremes are on by default only for the thermal camera.
     thermal: defaultThermal(id === "camera2"),
   });
@@ -111,6 +122,14 @@ export function createDefaultConfig(): AppConfig {
     platformPort: 9760,
     rangefinderIp: "192.168.1.7",
     rangefinderPort: 20108,
+    rangefinder: {
+      targetMode: "first",
+      frequencyHz: 5,
+      continuousSeconds: 60,
+      overlay: "both",
+      rangeAfterJog: true,
+      sight: { enabled: false, style: "box", color: "#ffffff", scale: 100, brightness: 100, offsets: { camera1: { x: 0, y: 0 }, camera2: { x: 0, y: 0 } } },
+    },
     relayIp: "192.168.127.254",
     relayPort: 9762,
     modules: [],
@@ -257,6 +276,18 @@ export function migrateConfig(stored: unknown): AppConfig {
   config.recording.format = "mp4";
   if (!["separate", "split", "both"].includes(config.recording.layout)) config.recording.layout = "separate";
   if (!["both", "camera1", "camera2"].includes(config.view)) config.view = "both";
+  if (!["first", "last", "multi"].includes(config.rangefinder.targetMode)) config.rangefinder.targetMode = "first";
+  if (!["both", "camera1", "camera2", "off"].includes(config.rangefinder.overlay)) config.rangefinder.overlay = "both";
+  config.rangefinder.frequencyHz = Math.round(clamp(config.rangefinder.frequencyHz, RANGEFINDER_LIMITS.frequencyHz));
+  config.rangefinder.continuousSeconds = Math.round(clamp(config.rangefinder.continuousSeconds, RANGEFINDER_LIMITS.continuousSeconds));
+  const sight = config.rangefinder.sight;
+  if (!SIGHT_STYLES.some((item) => item.value === sight.style)) sight.style = "box";
+  if (!/^#[0-9a-f]{6}$/i.test(sight.color)) sight.color = "#ffffff";
+  sight.scale = Math.round(clamp(sight.scale, SIGHT_LIMITS.scale));
+  sight.brightness = Math.round(clamp(sight.brightness, SIGHT_LIMITS.brightness));
+  for (const id of ["camera1", "camera2"] as const) {
+    sight.offsets[id] = { x: Math.round(clamp(sight.offsets[id].x, SIGHT_LIMITS.offset)), y: Math.round(clamp(sight.offsets[id].y, SIGHT_LIMITS.offset)) };
+  }
   config.recording.stopAfterMinutes = Math.round(clamp(config.recording.stopAfterMinutes, [0, 1440]));
   config.recording.includeEncryptedSecrets = false;
   config.schemaVersion = SCHEMA_VERSION;

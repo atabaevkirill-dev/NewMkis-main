@@ -24,11 +24,11 @@ export interface JogControl {
  * confirmed every 250 ms, and releasing, cancelling, losing capture, blurring or hiding the window stops the axes.
  * If the view itself dies, the native watchdog stops the axes when confirmations cease.
  */
-export function useJog(target: { ip: string; port: number; label: string }, speeds: JogConfig, notify: Notify): JogControl {
+export function useJog(target: { ip: string; port: number; label: string }, speeds: JogConfig, notify: Notify, onReleased?: () => void): JogControl {
   const active = useRef<JogDirection | null>(null);
   const timer = useRef<number | null>(null);
-  const latest = useRef({ target, speeds, notify });
-  latest.current = { target, speeds, notify };
+  const latest = useRef({ target, speeds, notify, onReleased });
+  latest.current = { target, speeds, notify, onReleased };
 
   const clearTimer = () => {
     if (timer.current !== null) window.clearInterval(timer.current);
@@ -40,9 +40,13 @@ export function useJog(target: { ip: string; port: number; label: string }, spee
     active.current = null;
     clearTimer();
     if (!wasActive && !force) return;
-    const { target: { ip, port, label }, notify: report } = latest.current;
+    const { target: { ip, port, label }, notify: report, onReleased: released } = latest.current;
     platformStop(ip, port)
-      .then(() => report(`${label} · СТОП`))
+      .then(() => {
+        report(`${label} · СТОП`);
+        // A move the operator ended (not an emergency stop): e.g. range the new aim point.
+        if (wasActive && !force) released?.();
+      })
       .catch((error) => report(`${label} · стоп не доставлен: ${String(error)}`, "error"));
   }, []);
 

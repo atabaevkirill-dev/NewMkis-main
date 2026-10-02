@@ -323,6 +323,54 @@ input[type="color"] { width: 24px; height: 20px; padding: 1px; border-radius: 3p
 .params-actions { display: flex; gap: 5px; }
 .params-actions button { height: 22px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: #161a21; color: #c9d0d8; font-size: 10px; }
 
+/* ---------- rangefinder ---------- */
+/* The distance on the crosshair: digits in the reticle colour with a dark halo (SVG paint-order). */
+.range-readout-svg { position: absolute; z-index: 3; overflow: visible; pointer-events: none; font-variant-numeric: tabular-nums; }
+.range-readout-svg.stale { opacity: .7; }
+.metric strong.stale { opacity: .5; }
+.range-readout-svg.ranging .range-value { animation: range-blink .5s steps(2, start) infinite; }
+.ranging-ring { transform-origin: 0 0; animation: range-ring .9s ease-out infinite; }
+@keyframes range-blink { to { visibility: hidden; } }
+@keyframes range-ring { from { opacity: .9; transform: scale(.6); } to { opacity: 0; transform: scale(1.6); } }
+.rangefinder-panel { height: 100%; display: grid; grid-template-columns: 210px minmax(280px, 1fr) minmax(280px, 1fr) minmax(190px, 230px); gap: 12px; }
+.range-block, .range-settings, .range-sight-settings, .range-module { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.range-sight-settings .setting-line { min-height: 24px; font-size: 10px; }
+.range-sight-settings select { width: 112px; height: 22px; font-size: 10px; }
+.range-sight-settings .swatches { gap: 2px; }
+.range-sight-settings .swatches button { width: 16px; height: 16px; }
+.range-sight-settings .swatches input[type="color"] { width: 20px; height: 18px; }
+/* Rangefinder sight on a pane: mil-dot, chevron, ranging box or glowing collimator, with the distance. */
+.range-sight { position: absolute; z-index: 3; overflow: visible; pointer-events: none; font-variant-numeric: tabular-nums; }
+.range-sight .stale { opacity: .7; }
+.range-sight.ranging .range-value, .range-sight.ranging .sight-ranging-part { animation: range-blink .5s steps(2, start) infinite; }
+.range-block .panel-head code { margin-left: auto; color: #aab2bd; font: 500 10px var(--mono); }
+.link-dot { padding: 1px 6px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font: 600 9px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.link-dot.on { color: #fff; border-color: #6b7480; }
+.link-dot.off { color: var(--danger-text); border-color: rgba(255, 92, 101, .45); }
+.range-readout { display: flex; align-items: baseline; gap: 4px; color: #f2f5f8; font: 600 26px var(--mono); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.range-readout span { color: var(--muted); font-size: 12px; }
+.range-readout.stale { opacity: .5; }
+.range-block .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.range-actions { display: flex; gap: 5px; margin-top: auto; }
+.range-actions button { height: 26px; display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); border-radius: 4px; background: #161a21; color: #c9d0d8; font-size: 10px; }
+.range-actions button svg { width: 12px; height: 12px; }
+.range-actions button.primary { border-color: #e6ebf1; background: #e6ebf1; color: #0e1217; font-weight: 600; }
+.range-actions button.active { border-color: var(--danger); color: var(--danger-text); }
+.range-settings .setting-line { min-height: 24px; font-size: 10px; }
+.range-settings select { width: 150px; height: 22px; font-size: 10px; }
+.segmented { display: flex; gap: 2px; }
+.segmented button { height: 22px; padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; background: #171c23; color: #8e98a4; font-size: 10px; }
+.segmented button.active { background: #e4e9ee; color: #0e1217; }
+.inline-fields { display: flex; align-items: center; gap: 4px; }
+.inline-fields .number-field input { width: 54px; }
+.range-module .panel-head .chip { margin-left: auto; height: 22px; }
+.range-module .panel-head .chip svg { width: 11px; }
+.range-module p { margin: 0; overflow: hidden; color: #aab2bd; font: 500 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.range-test { display: flex; align-items: center; gap: 8px; margin-top: auto; font: 500 10px var(--mono); color: var(--muted); }
+.range-test .chip { height: 22px; }
+.range-test .pass { color: #fff; }
+.range-test .fail { color: var(--danger-text); }
+
 /* ---------- which cameras are shown ---------- */
 .view-switch { display: flex; align-items: center; gap: 1px; padding: 2px; margin-right: 4px; border: 1px solid var(--line-soft); border-radius: 6px; }
 .top-bar .view-switch button { height: 22px; max-width: 86px; padding: 0 8px; overflow: hidden; border-radius: 4px; font: 600 10px var(--mono); letter-spacing: .04em; text-overflow: ellipsis; }
@@ -332,6 +380,14 @@ input[type="color"] { width: 24px; height: 20px; padding: 1px; border-radius: 3p
 .top-bar .view-switch button.amber.active { color: var(--amber); background: var(--amber-soft); border-color: rgba(240, 166, 74, .35); }
 .video-stage.single { grid-template-columns: minmax(0, 1fr); }
 .video-stage.single .split, .video-pane.hidden { display: none; }
+/* Corner button on hover: hide this camera, or bring the other one back when this one is alone. */
+.pane-view { position: absolute; top: 10px; right: 10px; z-index: 6; width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(191, 201, 213, .42); border-radius: 5px; background: rgba(13, 16, 21, .82); color: #c9d0d8; opacity: 0; pointer-events: none; transition: opacity .15s; }
+.video-pane:hover .pane-view, .pane-view:focus-visible { opacity: 1; pointer-events: auto; }
+.pane-view:hover { color: #fff; border-color: #8a939e; }
+.pane-view svg { width: 14px; height: 14px; }
+/* Divider dragged to an edge: the squeezed pane will be hidden on release. */
+.video-stage[data-collapse="left"] > .video-pane:first-child::after,
+.video-stage[data-collapse="right"] > .video-pane:last-child::after { content: "СКРЫТЬ"; position: absolute; inset: 0; z-index: 9; display: grid; place-items: center; background: rgba(4, 6, 8, .72); color: #fff; font: 600 10px var(--mono); letter-spacing: .12em; }
 
 /* ---------- status bar ---------- */
 .status-bar { height: var(--status-h); flex: 0 0 var(--status-h); display: flex; align-items: stretch; border-top: 1px solid var(--line); background: #0a0d11; font: 500 10px var(--mono); overflow: hidden; }

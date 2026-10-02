@@ -1,6 +1,6 @@
 import type { ReticleConfig } from "./types";
 
-/** Hot-target position in one camera, in that camera's video pixels. */
+/** Hot-target position in one camera, in video pixels of the picture as shown (after mirroring). */
 export interface TargetFix {
   x: number;
   y: number;

@@ -21,7 +21,7 @@ use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::State;
 
@@ -177,12 +177,18 @@ fn coordinate(fraction: f64) -> u32 {
     (fraction.clamp(0.0, 1.0) * COORDINATE_MAX).round() as u32
 }
 
+/// After the camera answers a measuring request with an error it is left alone this long. Seen on
+/// the stand camera: «Server internal error» for a while after it was powered on.
+const PAUSE: Duration = Duration::from_secs(5);
+
 #[derive(Default)]
 struct CameraThermal {
     target: Option<(SocketAddr, String)>,
     session: Option<Session>,
-    /// Why measuring stopped (password refused, no radiometry): kept until `thermal_reset`.
+    /// Why measuring stopped (password refused): kept until `thermal_reset`.
     blocked: Option<String>,
+    /// The camera answered with an error: the same error is reported until then without asking it.
+    paused: Option<(Instant, String)>,
 }
 
 #[derive(Default)]
@@ -198,8 +204,10 @@ impl Thermal {
 }
 
 enum Failure {
-    /// The camera must not be asked again until the operator acts.
+    /// The camera must not be asked again until the operator acts (refused password).
     Block(String),
+    /// The camera answered with an error: ask again after `PAUSE`.
+    Pause(String),
     /// Network trouble or a refused request: the next call tries again.
     Transient(String),
 }
@@ -222,12 +230,22 @@ fn with_session<T>(
     if let Some(reason) = &state.blocked {
         return Err(reason.clone());
     }
+    match &state.paused {
+        Some((until, reason)) if Instant::now() < *until => return Err(reason.clone()),
+        _ => state.paused = None,
+    }
     if state.session.is_none() {
         state.session = Some(Session::new(address, username.to_string(), password()?));
     }
     match work(state.session.as_mut().expect("session was just created")) {
         Ok(value) => Ok(value),
         Err(Failure::Transient(error)) => Err(error),
+        Err(Failure::Pause(reason)) => {
+            let reason = format!("{reason} · повтор через {} с", PAUSE.as_secs());
+            eprintln!("[thermal] {address}: {reason}");
+            state.paused = Some((Instant::now() + PAUSE, reason.clone()));
+            Err(reason)
+        }
         Err(Failure::Block(reason)) => {
             eprintln!("[thermal] {address}: {reason}");
             state.session = None;
@@ -256,9 +274,9 @@ fn measure(state: &mut CameraThermal, address: SocketAddr, username: &str, point
                 let path = format!("/cgi-bin/RadiometryManager.cgi?action=getRandomPointTemper&channel={CHANNEL}&coordinate[0]={}&coordinate[1]={}", coordinate(x), coordinate(y));
                 match session.get(&path) {
                     Ok(response) if response.status == 200 => parse_point(&response.body)
-                        .map_err(|detail| Failure::Block(format!("камера не отдаёт температуру точки ({detail})")))
-                        .and_then(|(value, label)| to_celsius(value, &label, unit).map_err(Failure::Block)),
-                    Ok(response) => Err(Failure::Block(format!("камера не отдаёт температуру точки (HTTP {})", response.status))),
+                        .map_err(|detail| Failure::Pause(format!("камера не отдаёт температуру точки ({detail})")))
+                        .and_then(|(value, label)| to_celsius(value, &label, unit).map_err(Failure::Pause)),
+                    Ok(response) => Err(Failure::Pause(format!("камера не отдаёт температуру точки (HTTP {})", response.status))),
                     Err(HttpError::Unauthorized) => Err(Failure::Block(REFUSED.into())),
                     Err(HttpError::Other(error)) => Err(Failure::Transient(error)),
                 }
@@ -497,10 +515,10 @@ mod tests {
         assert_eq!((coordinate(0.0), coordinate(0.5), coordinate(1.0), coordinate(1.5)), (0, 4096, 8191, 8191));
     }
 
-    /// A camera that challenges every request without credentials and refuses every password the
-    /// way the stand camera does («Invalid Authority!» with HTTP 200). Returns its port and the
-    /// number of requests that carried credentials.
-    fn refusing_camera() -> (SocketAddr, Arc<AtomicUsize>) {
+    /// A camera that challenges every request without credentials and answers every request with
+    /// credentials by `body` (HTTP 200, as the stand camera does even for errors). Returns its port
+    /// and the number of requests that carried credentials.
+    fn camera_answering(body: &'static str) -> (SocketAddr, Arc<AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let attempts = Arc::new(AtomicUsize::new(0));
@@ -519,7 +537,6 @@ mod tests {
                 }
                 let answer = if String::from_utf8_lossy(&request).contains("Authorization: Digest") {
                     counter.fetch_add(1, Ordering::SeqCst);
-                    let body = "Error\r\nErrorID=0, Detail=Invalid Authority!\r\n";
                     format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}", body.len())
                 } else {
                     "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Digest realm=\"Login to TEST\",qop=\"auth\",nonce=\"1\",opaque=\"x\"\r\nContent-Length: 0\r\n\r\n".to_string()
@@ -532,7 +549,7 @@ mod tests {
 
     #[test]
     fn a_refused_password_is_tried_once_and_never_again() {
-        let (address, attempts) = refusing_camera();
+        let (address, attempts) = camera_answering("Error\r\nErrorID=0, Detail=Invalid Authority!\r\n");
         let mut state = CameraThermal::default();
         let password = || Ok("wrong".to_string());
         let points = [[0.5, 0.5], [0.1, 0.1], [0.9, 0.9]];
@@ -545,6 +562,24 @@ mod tests {
         // Another address or login is another account: it gets its own single attempt.
         let _ = measure(&mut state, address, "operator", &points, Unit::Camera, &password);
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn an_error_answer_pauses_measuring_and_is_retried() {
+        // The stand camera answered so for a while after being powered on.
+        let (address, attempts) = camera_answering("Error\r\nErrorID=5, Detail=Server internal error!\r\n");
+        let mut state = CameraThermal::default();
+        let password = || Ok("right".to_string());
+        let points = [[0.5, 0.5], [0.1, 0.1]];
+        let first = measure(&mut state, address, "admin", &points, Unit::Camera, &password).unwrap_err();
+        assert!(first.contains("Server internal error") && first.contains("повтор"), "{first}");
+        assert_eq!(measure(&mut state, address, "admin", &points, Unit::Camera, &password).unwrap_err(), first);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "paused: the camera is not asked again at once");
+        // Once the pause is over the camera is asked again; the password is not blocked.
+        state.paused = state.paused.take().map(|(_, reason)| (Instant::now(), reason));
+        assert!(measure(&mut state, address, "admin", &points, Unit::Camera, &password).is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(state.blocked.is_none());
     }
 
     /// Read-only probe of a thermal camera's HTTP API (`MKIS_HTTP=camera2-web@192.168.1.107:80`):

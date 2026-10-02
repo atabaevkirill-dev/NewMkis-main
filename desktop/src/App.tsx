@@ -1,9 +1,12 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
-import { AlignCenter, ArrowLeftRight, CircleDot, Columns2, Crosshair, GripVertical, PanelTopOpen, Pencil, Save, SlidersHorizontal, Square } from "lucide-react";
+import { AlignCenter, ArrowLeftRight, CircleDot, Columns2, Crosshair, GripVertical, PanelTopOpen, Pencil, Save, SlidersHorizontal, Square, Target, X } from "lucide-react";
 import { version } from "../package.json";
-import { discoverCameras, inTauri, loadConfig, onRecordingState, onRockingState, persistConfig, printPage, probeModules, startRecording, stopRecording } from "./api";
+import { discoverCameras, inTauri, loadConfig, onRangefinder, onRecordingState, onRockingState, persistConfig, printPage, probeModules, rangefinderContinuous, rangefinderMeasure, rangefinderTargetMode, startRecording, stopRecording } from "./api";
+import { INITIAL_RANGEFINDER, SETTLE_MS, addFaults, addTarget, describeCode, formatMetres, mainTarget, rangeAnchor, rangeDisplay, rangeLabel, type RangeDisplay } from "./rangefinder";
+import { RangeReadout } from "./RangeReadout";
+import { RangeSight } from "./RangeSight";
 import { lensStep } from "./lens";
 import { CameraDrawer } from "./CameraDrawer";
 import { MAX_TITLE_LENGTH, OFF_STATS, createDefaultConfig, listModules, moduleName } from "./config";
@@ -12,7 +15,7 @@ import { ReticleLayer } from "./Reticle";
 import { buildReport, reportFileStamp, testKey } from "./report";
 import { SystemDrawer, type SystemTab } from "./SystemDrawer";
 import { useJog, type JogControl } from "./useJog";
-import type { AppConfig, CameraConfig, FoundCamera, ModuleView, Notify, ProbeResult, RecordingEvent, ReticleConfig, RockingEvent, TestRecord, ThermalReadings, ThermalSpot, VideoStats, VideoView } from "./types";
+import type { AppConfig, CameraConfig, FoundCamera, ModuleView, Notify, ProbeResult, RangeSightConfig, RangefinderStatus, RecordingEvent, ReticleConfig, RockingEvent, TestRecord, ThermalReadings, ThermalSpot, VideoStats, VideoView } from "./types";
 import { VideoSurface } from "./VideoSurface";
 import { PaletteFilters, ThermalLayer } from "./ThermalLayer";
 import { paletteFilter } from "./thermal";
@@ -31,6 +34,8 @@ const REPLACE_SEARCH_MS = 20_000;
 const NOTCH_DELTA = 30;
 /** Small deltas (touchpad) that add up to one step. */
 const NOTCH_PIXELS = 100;
+/** Divider released this close to an edge (percent of the stage): the squeezed camera is hidden. */
+const COLLAPSE_PERCENT = 12;
 
 /** Why a pane has no picture, shown under «НЕТ СИГНАЛА». */
 function noSignalReason(video: VideoStats): string {
@@ -46,10 +51,17 @@ function noSignalReason(video: VideoStats): string {
   }
 }
 
-const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, restartKey, video, onVideoStats, measure, onTarget, onThermalSpots, onThermal, hidden }: {
+const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, restartKey, video, onVideoStats, measure, onTarget, onThermalSpots, onThermal, hidden, alone, onView, range, sight }: {
   camera: CameraConfig;
+  /** Distance shown on the crosshair, or null. */
+  range: RangeDisplay | null;
+  /** Rangefinder sight replacing the reticles (with the distance built in), or null. */
+  sight: { sight: RangeSightConfig; offset: { x: number; y: number }; display: RangeDisplay | null } | null;
   /** Not shown (the other camera has the whole stage); the stream keeps running. */
   hidden: boolean;
+  /** The only pane shown: its corner button brings the other camera back instead of hiding this one. */
+  alone: boolean;
+  onView: (view: VideoView) => void;
   label: string;
   jog: JogControl;
   streaming: boolean;
@@ -117,7 +129,9 @@ const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, resta
       onPointerLeave={() => { rightMouseDown.current = false; }}
     >
       <VideoSurface camera={camera} active={streaming} restartKey={restartKey} onStats={onVideoStats} measure={measure} onTarget={onTarget} palette={thermal ? camera.thermal.palette : "camera"} />
-      {video.live && <ReticleLayer reticles={camera.reticles} />}
+      {video.live && !sight && <ReticleLayer reticles={camera.reticles} />}
+      {video.live && !sight && range && <RangeReadout display={range} reticles={camera.reticles} />}
+      {video.live && sight && <RangeSight sight={sight.sight} offset={sight.offset} display={sight.display} />}
       {video.live && thermal && (
         <ThermalLayer
           camera={camera}
@@ -140,6 +154,15 @@ const VideoPane = memo(function VideoPane({ camera, label, jog, streaming, resta
         <i /><button type="button" {...jog.bind("down")} aria-label="Поворотка вниз">▼</button><i />
       </div>
       {lensIndicator && <div className="lens-indicator">{lensIndicator}</div>}
+      <button
+        type="button"
+        className="pane-view"
+        onClick={() => onView(alone ? "both" : camera.id === "camera1" ? "camera2" : "camera1")}
+        title={alone ? "Показать обе камеры" : `Скрыть ${label}: вторая камера займёт всё окно`}
+        aria-label={alone ? "Показать обе камеры" : `Скрыть ${label}`}
+      >
+        {alone ? <Columns2 /> : <X />}
+      </button>
       {!video.live && (
         <div className={`no-signal ${video.state}`}>
           <strong>НЕТ СИГНАЛА</strong>
@@ -216,8 +239,9 @@ function alignmentLabel(config: AppConfig, view: AlignmentView): string {
   }
 }
 
-function StatusBar({ config, modules, probes, video, alignment, rocking, notice }: {
+function StatusBar({ config, modules, probes, video, alignment, rocking, notice, rangefinder }: {
   config: AppConfig;
+  rangefinder: RangefinderStatus;
   modules: ModuleView[];
   probes: Record<string, ProbeResult>;
   video: Record<CameraConfig["id"], VideoStats>;
@@ -244,9 +268,18 @@ function StatusBar({ config, modules, probes, video, alignment, rocking, notice 
       {camera("camera1", moduleName(config, "camera1"), "blue")}
       {camera("camera2", moduleName(config, "camera2"), "amber")}
       <div className="metrics">
-        {["PAN", "TILT", "RANGE"].map((label) => (
+        {["PAN", "TILT"].map((label) => (
           <div className="metric" key={label} title="Живая телеметрия ещё не подключена"><span>{label}</span><strong>—</strong></div>
         ))}
+        <div
+          className="metric range"
+          title={rangefinder.reading
+            ? `${describeCode(mainTarget(rangefinder.reading)?.code ?? 0)} · ${new Date(rangefinder.reading.at).toLocaleTimeString("ru-RU")}`
+            : rangefinder.connected === false ? `${moduleName(config, "rangefinder")}: нет связи · ${rangefinder.message}` : "Замеров ещё не было · R — замер"}
+        >
+          <span>RANGE</span>
+          <strong className={rangeLabel(rangefinder.reading)?.stale ? "stale" : ""}>{rangefinder.reading ? formatMetres(mainTarget(rangefinder.reading)?.distance) : "—"}</strong>
+        </div>
         <div className="metric delta" title={`Ошибка ${moduleName(config, "camera1")} относительно прицела, px видео`}>
           <span>ΔX/ΔY</span>
           <strong>{alignment.optical ? `${signed(alignment.optical.dx)} / ${signed(alignment.optical.dy)}` : "—"}</strong>
@@ -433,7 +466,15 @@ export default function App() {
               const thermalCamera = camera && id === "camera2" ? camera : null;
               const filter = thermalCamera ? paletteFilter(thermalCamera.thermal.palette) : null;
               const thermal = thermalCamera && latest.recording.splitThermal ? { config: thermalCamera.thermal, readings: thermalReadingsRef.current[id] } : null;
-              return canvas ? { canvas, filter, thermal, reticles: latest.recording.splitReticles && camera ? camera.reticles : null } : null;
+              const overlay = latest.rangefinder.overlay;
+              const shown = latest.recording.splitReticles && (overlay === "both" || overlay === id);
+              const display = shown ? rangeDisplay(rangefinderRef.current, latest.rangefinder, rangingRef.current) : null;
+              const sightConfig = latest.rangefinder.sight;
+              const sight = shown && camera && sightConfig.enabled && !latest.alignment.enabled ? { sight: sightConfig, offset: sightConfig.offsets[id], display } : null;
+              const range = display && camera && !sight ? { display, ...rangeAnchor(camera.reticles) } : null;
+              return canvas && camera
+                ? { canvas, filter, thermal, range, sight, flipX: camera.flipX, flipY: camera.flipY, reticles: latest.recording.splitReticles && !sight ? camera.reticles : null }
+                : null;
             };
             // Same order as on screen: after a swap CAM 02 is on the left.
             const recorder = new SplitRecorder(
@@ -498,7 +539,81 @@ export default function App() {
     () => ({ ip: config.platformIp, port: config.platformPort, label: platformLabel }),
     [config.platformIp, config.platformPort, platformLabel],
   );
-  const jog = useJog(platformTarget, config.jog, notify);
+  // Rangefinder: one live state for the reticles, the status bar and its panel; results arrive as events.
+  const [rangefinder, setRangefinder] = useState<RangefinderStatus>(INITIAL_RANGEFINDER);
+  const rangefinderRef = useRef(rangefinder);
+  rangefinderRef.current = rangefinder;
+  /** When a single range was asked for and its reply has not arrived yet: the crosshair shows «ranging». */
+  const [rangingAt, setRangingAt] = useState<number | null>(null);
+  const rangingRef = useRef(rangingAt);
+  rangingRef.current = rangingAt;
+  // Hiding the rangefinder in the summary stops only what the app does by itself (connecting at start,
+  // ranging after a D-pad move); whatever the operator asks for still works and shows on the crosshair.
+  const sendTargetMode = useCallback((automatic: boolean) => {
+    const { rangefinderIp: ip, rangefinderPort: port, rangefinder: settings, hiddenModules } = configRef.current;
+    if ((automatic && hiddenModules.includes("rangefinder")) || !inTauri()) return;
+    rangefinderTargetMode(ip, port, settings.targetMode).catch((error) => setRangefinder((current) => ({ ...current, connected: false, message: String(error) })));
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | null = null;
+    void onRangefinder((event) => {
+      switch (event.kind) {
+        case "target":
+          setRangefinder((current) => addTarget(current, event.target, event.continuous));
+          setRangingAt(null);
+          break;
+        case "fault":
+          setRangefinder((current) => addFaults(current, event.faults));
+          break;
+        case "continuous":
+          setRangefinder((current) => ({ ...current, continuous: event.on }));
+          notify(`${moduleName(configRef.current, "rangefinder")} · ${event.on ? "непрерывный замер" : "непрерывный замер остановлен"} · ${event.reason}`);
+          break;
+        case "link":
+          setRangefinder((current) => ({ ...current, connected: event.connected, message: event.message, continuous: event.connected && current.continuous }));
+          // A module that was power-cycled is set up again as soon as the link is back.
+          if (event.connected) sendTargetMode(false);
+          break;
+      }
+    }).then((stop) => {
+      if (alive) unlisten = stop;
+      else stop();
+    });
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, [notify, sendTargetMode]);
+  const rangeOnce = useCallback(() => {
+    const { rangefinderIp: ip, rangefinderPort: port } = configRef.current;
+    if (rangefinderRef.current.continuous) return;
+    setRangingAt(Date.now());
+    rangefinderMeasure(ip, port).catch((error) => {
+      setRangingAt(null);
+      notify(`${moduleName(configRef.current, "rangefinder")}: ${String(error)}`, "error");
+    });
+  }, [notify]);
+  const rangeContinuous = useCallback((on: boolean) => {
+    const { rangefinderIp: ip, rangefinderPort: port, rangefinder: settings } = configRef.current;
+    rangefinderContinuous(ip, port, on, settings.frequencyHz, settings.continuousSeconds).catch((error) => notify(`${moduleName(configRef.current, "rangefinder")}: ${String(error)}`, "error"));
+  }, [notify]);
+  // A D-pad move the operator ended: range the new aim point once the platform has settled.
+  const settleTimer = useRef<number | null>(null);
+  const onJogReleased = useCallback(() => {
+    if (!configRef.current.rangefinder.rangeAfterJog || configRef.current.hiddenModules.includes("rangefinder")) return;
+    if (settleTimer.current !== null) window.clearTimeout(settleTimer.current);
+    settleTimer.current = window.setTimeout(() => {
+      settleTimer.current = null;
+      rangeOnce();
+    }, SETTLE_MS);
+  }, [rangeOnce]);
+  const jog = useJog(platformTarget, config.jog, notify, onJogReleased);
+  /** СТОП and Esc: the platform, a rocking profile and continuous ranging. */
+  const emergencyStop = useCallback(() => {
+    jog.stopNow();
+    if (rangefinderRef.current.continuous) rangeContinuous(false);
+  }, [jog, rangeContinuous]);
 
   const saveAll = useCallback(async () => {
     const current = configRef.current;
@@ -513,7 +628,13 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.repeat) jog.stopNow();
+      if (event.key === "Escape" && !event.repeat) emergencyStop();
+      // R (the physical key, any keyboard layout): one range measurement, unless the operator is typing.
+      const typing = event.target instanceof HTMLElement && (event.target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName));
+      if (event.code === "KeyR" && !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey && !typing) {
+        event.preventDefault();
+        rangeOnce();
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         void saveAll();
@@ -521,7 +642,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [jog, saveAll]);
+  }, [emergencyStop, rangeOnce, saveAll]);
 
   const patchCamera = useCallback((id: CameraConfig["id"], patch: Partial<CameraConfig>) => {
     setConfig((current) => ({ ...current, cameras: current.cameras.map((camera) => (camera.id === id ? { ...camera, ...patch } : camera)) as [CameraConfig, CameraConfig] }));
@@ -604,12 +725,18 @@ export default function App() {
   const onThermal = useCallback((id: CameraConfig["id"], readings: ThermalReadings | null) => {
     setThermalReadings((current) => ({ ...current, [id]: readings }));
   }, []);
+  const setView = useCallback((view: VideoView) => setConfig((current) => ({ ...current, view })), []);
   const onThermalSpots = useCallback((id: CameraConfig["id"], spots: ThermalSpot[]) => {
     setConfig((current) => ({ ...current, cameras: current.cameras.map((camera) => (camera.id === id ? { ...camera, thermal: { ...camera.thermal, spots } } : camera)) as [CameraConfig, CameraConfig] }));
   }, []);
 
   // First search as soon as the stored config is in, so the camera drawers can offer it right away.
   const loaded = savedSnapshot !== null;
+  // The chosen target mode is sent at start (this also opens the link and identifies the module) and on change.
+  const rangefinderHidden = config.hiddenModules.includes("rangefinder");
+  useEffect(() => {
+    if (loaded && !rangefinderHidden) sendTargetMode(true);
+  }, [loaded, rangefinderHidden, config.rangefinderIp, config.rangefinderPort, config.rangefinder.targetMode, sendTargetMode]);
   useEffect(() => {
     if (loaded) void discover().catch(() => undefined);
   }, [loaded, discover]);
@@ -716,13 +843,28 @@ export default function App() {
     const bounds = stage.getBoundingClientRect();
     let latest = split;
     const move = (moveEvent: PointerEvent) => {
-      latest = Math.max(24, Math.min(76, ((moveEvent.clientX - bounds.left) / bounds.width) * 100));
-      stage.style.setProperty("--split", `${latest}%`);
+      latest = Math.max(0, Math.min(100, ((moveEvent.clientX - bounds.left) / bounds.width) * 100));
+      stage.style.setProperty("--split", `${Math.max(4, Math.min(96, latest))}%`);
+      // Near an edge the squeezed pane says it will be hidden on release.
+      stage.dataset.collapse = latest < COLLAPSE_PERCENT ? "left" : latest > 100 - COLLAPSE_PERCENT ? "right" : "";
     };
     const end = () => {
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", end);
       handle.removeEventListener("pointercancel", end);
+      delete stage.dataset.collapse;
+      if (latest < COLLAPSE_PERCENT || latest > 100 - COLLAPSE_PERCENT) {
+        // Dragged to an edge: the squeezed camera is hidden and the other one takes the stage; the
+        // divider waits in the middle for when both are shown again.
+        const squeezedLeft = latest < COLLAPSE_PERCENT;
+        const kept = squeezedLeft === swappedRef.current ? "camera1" : "camera2";
+        stage.style.setProperty("--split", "50%");
+        setSplit(50);
+        setView(kept);
+        return;
+      }
+      latest = Math.max(24, Math.min(76, latest));
+      stage.style.setProperty("--split", `${latest}%`);
       setSplit(latest);
     };
     handle.addEventListener("pointermove", move);
@@ -739,6 +881,13 @@ export default function App() {
   const dirty = savedSnapshot !== null && JSON.stringify(config) !== savedSnapshot;
   // Streams open only once the stored config is loaded, so defaults never hit a camera first.
   const streaming = (camera: CameraConfig) => savedSnapshot !== null && (streamOverride[camera.id] ?? camera.autoConnect);
+  const rangeText = rangeDisplay(rangefinder, config.rangefinder, rangingAt);
+  const rangeShownOn = (camera: CameraConfig) => config.rangefinder.overlay === "both" || config.rangefinder.overlay === camera.id;
+  const rangeFor = (camera: CameraConfig) => (rangeShownOn(camera) ? rangeText : null);
+  // The rangefinder sight replaces the reticles where the distance is shown; alignment needs the reticles back.
+  const sightOn = config.rangefinder.sight.enabled && !config.alignment.enabled;
+  const sightFor = (camera: CameraConfig) =>
+    sightOn && rangeShownOn(camera) ? { sight: config.rangefinder.sight, offset: config.rangefinder.sight.offsets[camera.id], display: rangeText } : null;
   const pane = (camera: CameraConfig) => (
     // Keyed, so swapping the panes moves them instead of reopening both streams.
     <VideoPane
@@ -755,9 +904,12 @@ export default function App() {
       onThermalSpots={onThermalSpots}
       onThermal={onThermal}
       hidden={config.view !== "both" && config.view !== camera.id}
+      alone={config.view === camera.id}
+      onView={setView}
+      range={rangeFor(camera)}
+      sight={sightFor(camera)}
     />
   );
-  const setView = (view: VideoView) => setConfig((current) => ({ ...current, view }));
   const drawerStream = (camera: CameraConfig) => ({
     video: video[camera.id],
     streaming: streaming(camera),
@@ -771,6 +923,40 @@ export default function App() {
     thermal: thermalReadings[camera.id],
   });
   const toggleDrawer = (id: Exclude<Drawer, null>) => setDrawer((current) => (current === id ? null : id));
+  // Settings toggles, drawers and the view switch follow the panes: after a swap the camera shown on
+  // the left has its settings on the left. Accents stay with the cameras (CAM 01 blue, CAM 02 amber).
+  const labelOf = (camera: CameraConfig) => (camera.id === "camera1" ? label1 : label2);
+  const accentOf = (camera: CameraConfig) => (camera.id === "camera1" ? "blue" : "amber");
+  const camToggle = (camera: CameraConfig, side: "left" | "right") => (
+    <button className={`cam-toggle ${accentOf(camera)} ${drawer === camera.id ? "active" : ""}`} onClick={() => toggleDrawer(camera.id)} type="button" title={`Настройки ${labelOf(camera)}`}>
+      {side === "left" ? <><SlidersHorizontal /> {labelOf(camera)}</> : <>{labelOf(camera)} <SlidersHorizontal /></>}
+    </button>
+  );
+  const viewButton = (camera: CameraConfig) => (
+    <button className={`${accentOf(camera)} ${config.view === camera.id ? "active" : ""}`} onClick={() => setView(camera.id)} type="button" title={`Показывать только ${labelOf(camera)}`}>
+      {labelOf(camera)}
+    </button>
+  );
+  const cameraDrawer = (camera: CameraConfig, side: "left" | "right") =>
+    drawer === camera.id ? (
+      // Keyed, so a swap moves the open drawer to the other side instead of rebuilding it.
+      <CameraDrawer
+        key={camera.id}
+        camera={camera}
+        side={side}
+        label={labelOf(camera)}
+        otherLabel={labelOf(camera.id === "camera1" ? camera2 : camera1)}
+        probe={probes[camera.id]}
+        {...drawerStream(camera)}
+        reticlesLinked={config.reticlesLinked}
+        onClose={() => setDrawer(null)}
+        onChange={(patch) => patchCamera(camera.id, patch)}
+        onReticlesChange={(reticles) => setReticles(camera.id, reticles)}
+        onReticlesLinkedChange={(linked) => linkReticles(camera.id, linked)}
+        onProbe={() => probeOne(camera.id)}
+        notify={notify}
+      />
+    ) : null;
   const openSystem = (tab: SystemTab) => {
     setSystemTab(tab);
     setSystemOpen(true);
@@ -780,19 +966,25 @@ export default function App() {
     <>
     <main className="app-shell">
       <header className="top-bar">
-        <button className={`cam-toggle blue ${drawer === "camera1" ? "active" : ""}`} onClick={() => toggleDrawer("camera1")} type="button" title={`Настройки ${label1}`}>
-          <SlidersHorizontal /> {label1}
-        </button>
+        {camToggle(left, "left")}
         <div className="brand"><Crosshair /><strong>MKIS100TEST</strong></div>
         <ProductTitle value={config.productTitle} onChange={(productTitle) => setConfig((current) => ({ ...current, productTitle }))} />
         {!inTauri() && <span className="mode-badge" title="Команды оборудованию не отправляются">БРАУЗЕРНЫЙ РЕЖИМ</span>}
         <div className="top-spacer" />
         <div className="view-switch" role="group" aria-label="Какие камеры показывать">
-          <button className={`blue ${config.view === "camera1" ? "active" : ""}`} onClick={() => setView("camera1")} type="button" title={`Показывать только ${label1}`}>{label1}</button>
+          {viewButton(left)}
           <button className={config.view === "both" ? "active" : ""} onClick={() => setView("both")} type="button" title="Показывать обе камеры"><Columns2 /></button>
-          <button className={`amber ${config.view === "camera2" ? "active" : ""}`} onClick={() => setView("camera2")} type="button" title={`Показывать только ${label2}`}>{label2}</button>
+          {viewButton(right)}
         </div>
         <nav className="top-actions">
+          <button
+            className={config.rangefinder.sight.enabled ? "active" : ""}
+            onClick={() => setConfig((current) => ({ ...current, rangefinder: { ...current.rangefinder, sight: { ...current.rangefinder.sight, enabled: !current.rangefinder.sight.enabled } } }))}
+            type="button"
+            title="Прицел дальномера с дальностью вместо перекрестий · R — замер · вид и подстройка: Система → Дальномер"
+          >
+            <Target /> Дальномер
+          </button>
           <button className={config.alignment.enabled ? "active" : ""} onClick={() => setConfig((current) => ({ ...current, alignment: { ...current.alignment, enabled: !current.alignment.enabled } }))} type="button" title="Режим сведения осей">
             <AlignCenter /> Сведение
           </button>
@@ -806,13 +998,11 @@ export default function App() {
             <Save />
             {dirty && <i />}
           </button>
-          <button className="estop" onClick={jog.stopNow} type="button" title={`Остановить ${platformLabel} и качку · Esc`}>
+          <button className="estop" onClick={emergencyStop} type="button" title={`Остановить ${platformLabel}, качку и непрерывный замер дальномера · Esc`}>
             <Square /> СТОП
           </button>
         </nav>
-        <button className={`cam-toggle amber ${drawer === "camera2" ? "active" : ""}`} onClick={() => toggleDrawer("camera2")} type="button" title={`Настройки ${label2}`}>
-          {label2} <SlidersHorizontal />
-        </button>
+        {camToggle(right, "right")}
       </header>
 
       {systemOpen && (
@@ -832,61 +1022,36 @@ export default function App() {
           jog={jog}
           rocking={rocking}
           recording={recordingControl}
+          rangefinder={rangefinder}
+          onRange={rangeOnce}
+          onRangeContinuous={rangeContinuous}
           notify={notify}
           onClose={() => setSystemOpen(false)}
         />
       )}
 
       <div className="workbench">
-        {drawer === "camera1" && (
-          <CameraDrawer
-            camera={camera1}
-            side="left"
-            label={label1}
-            otherLabel={label2}
-            probe={probes.camera1}
-            {...drawerStream(camera1)}
-            reticlesLinked={config.reticlesLinked}
-            onClose={() => setDrawer(null)}
-            onChange={(patch) => patchCamera("camera1", patch)}
-            onReticlesChange={(reticles) => setReticles("camera1", reticles)}
-            onReticlesLinkedChange={(linked) => linkReticles("camera1", linked)}
-            onProbe={() => probeOne("camera1")}
-            notify={notify}
-          />
-        )}
-        <div className={`video-stage ${config.view !== "both" ? "single" : ""}`} ref={stageRef} style={{ "--split": `${split}%` } as CSSProperties}>
-          {pane(left)}
-          <div className="split">
-            <button className="split-grip" onPointerDown={beginSplitDrag} onDoubleClick={() => setSplit(50)} type="button" title="Перетащите · двойной клик — поровну">
-              <GripVertical />
-            </button>
-            <button className="split-swap" onClick={() => setSwapped((value) => !value)} type="button" title="Поменять камеры местами">
-              <ArrowLeftRight />
-            </button>
-          </div>
-          {pane(right)}
-        </div>
-        {drawer === "camera2" && (
-          <CameraDrawer
-            camera={camera2}
-            side="right"
-            label={label2}
-            otherLabel={label1}
-            probe={probes.camera2}
-            {...drawerStream(camera2)}
-            reticlesLinked={config.reticlesLinked}
-            onClose={() => setDrawer(null)}
-            onChange={(patch) => patchCamera("camera2", patch)}
-            onReticlesChange={(reticles) => setReticles("camera2", reticles)}
-            onReticlesLinkedChange={(linked) => linkReticles("camera2", linked)}
-            onProbe={() => probeOne("camera2")}
-            notify={notify}
-          />
-        )}
+        {[
+          cameraDrawer(left, "left"),
+          // Keyed and in a list with the drawers, so opening, closing or moving a drawer never
+          // rebuilds the stage (that would reopen both streams).
+          <div key="stage" className={`video-stage ${config.view !== "both" ? "single" : ""}`} ref={stageRef} style={{ "--split": `${split}%` } as CSSProperties}>
+            {pane(left)}
+            <div className="split">
+              <button className="split-grip" onPointerDown={beginSplitDrag} onDoubleClick={() => setSplit(50)} type="button" title="Перетащите · до края — скрыть камеру · двойной клик — поровну">
+                <GripVertical />
+              </button>
+              <button className="split-swap" onClick={() => setSwapped((value) => !value)} type="button" title="Поменять камеры местами (вместе с их настройками)">
+                <ArrowLeftRight />
+              </button>
+            </div>
+            {pane(right)}
+          </div>,
+          cameraDrawer(right, "right"),
+        ]}
       </div>
 
-      <StatusBar config={config} modules={modules} probes={probes} video={video} alignment={alignment} rocking={rocking} notice={notice} />
+      <StatusBar config={config} modules={modules} probes={probes} video={video} alignment={alignment} rocking={rocking} notice={notice} rangefinder={rangefinder} />
     </main>
     <PrintReport model={reportModel} />
     <PaletteFilters />

@@ -27,6 +27,7 @@ Units are swapped on the stand: other cameras and platforms appear at the same a
 | CAM 02 since v0.2.5: OEM «General IP Camera», serial GD0309PAZ00156 | `192.168.1.107` | Dahua-family firmware 1.030, iRay FT640 core, radiometric: `RadiometryManager.cgi` point temperatures (30–60 ms, 0.1°). Web password differs from the ONVIF one (keychain `camera2-web`). Config: `TemperatureUnit=Centigrade`, `TempRangeMode=High`, `TemperEnable=false`, ε 0.98, 5.5 m; yet a 19–20 °C room reads 66–68 |
 | CAM 02 alternative: thermal via Beward B102S | `192.168.1.99` | RTSP `/av0_0`. Clock stuck around 2010. Relative zoom/focus only (`GetStatus` fails), every lens command answers after ≈ 1 s |
 | TL.0009 | `192.168.1.115:9760` | service protocol answers only on 9760 |
+| Rangefinder 3 km, 1535 nm, class 1, serial 06.2025 № 86 | `192.168.1.7:20108` | serial-to-TCP converter, no login on the data port, several clients at once; replies in 3–10 ms; gate 15–4200 m. Its web page credentials are not needed |
 
 A second Beward sits at its factory address `192.168.0.99` (another subnet, unreachable from this PC). Camera clocks are wrong: ONVIF requests are stamped with the camera clock.
 
@@ -51,6 +52,7 @@ Ignored tests in `desktop/src-tauri`, run with `cargo test --lib <name> -- --ign
 | `dump_raw_rtp` | `MKIS_RTP` | 60 s of raw RTP, looks for `00 00 00 xx` |
 | `real_file` | `MKIS_DEFRAG=<copy.mp4>` | re-indexes a recording in place: use a copy |
 | `real_radiometry` | `MKIS_HTTP=camera2-web@192.168.1.107:80`, optional `MKIS_PATHS` (paths joined by `\|`), `MKIS_USER`, `MKIS_SAVE` (directory for binary answers such as `snapshot.cgi`) | read-only HTTP API probe; stops at the first refusal |
+| `real_rangefinder_info` | `MKIS_LRF=192.168.1.7:20108` | serial, versions, pulse counters, gate with reply times; **no laser emission**. A range, a self-test or continuous ranging fire the laser (class 1): say so before doing it |
 
 Measure before changing: timings and positions read from the devices settled every lens and stream question in this project.
 

@@ -1,6 +1,7 @@
 mod discovery;
 mod mp4fix;
 mod onvif;
+mod rangefinder;
 mod record;
 mod split;
 mod thermal;
@@ -903,16 +904,21 @@ pub fn run() {
     let watchdog = Arc::clone(&platform);
     let lens = Arc::new(onvif::Lens::default());
     let lens_watchdog = Arc::clone(&lens);
+    let rangefinder = Arc::new(rangefinder::Rangefinder::default());
+    let rangefinder_watchdog = Arc::clone(&rangefinder);
+    let rangefinder_exit = Arc::clone(&rangefinder);
     tauri::Builder::default()
         .manage(platform)
         .manage(Arc::new(video::Streams::default()))
         .manage(lens)
         .manage(Arc::new(thermal::Thermal::default()))
+        .manage(rangefinder)
         .manage(Arc::new(split::SplitFiles::default()))
         .plugin(tauri_plugin_dialog::init())
-        .setup(move |_app| {
+        .setup(move |app| {
             spawn_jog_watchdog(watchdog);
             onvif::spawn_lens_watchdog(lens_watchdog);
+            rangefinder::spawn_watchdog(rangefinder_watchdog, app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -933,6 +939,12 @@ pub fn run() {
             thermal::thermal_reset,
             thermal::thermal_params_get,
             thermal::thermal_params_set,
+            rangefinder::rangefinder_measure,
+            rangefinder::rangefinder_continuous,
+            rangefinder::rangefinder_target_mode,
+            rangefinder::rangefinder_gates,
+            rangefinder::rangefinder_self_test,
+            rangefinder::rangefinder_info,
             discovery::discover_cameras,
             video::camera_stream_start,
             video::camera_stream_stop,
@@ -944,8 +956,14 @@ pub fn run() {
             start_rocking,
             stop_rocking
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running MKIS100TEST");
+        .build(tauri::generate_context!())
+        .expect("error while running MKIS100TEST")
+        .run(move |_app, event| {
+            // Continuous ranging must not outlive the app.
+            if let tauri::RunEvent::Exit = event {
+                rangefinder_exit.stop_on_exit();
+            }
+        });
 }
 
 #[cfg(test)]

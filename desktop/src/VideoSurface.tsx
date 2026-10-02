@@ -41,7 +41,7 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
   const onTargetRef = useRef(onTarget);
   onTargetRef.current = onTarget;
   const [marker, setMarker] = useState<{ left: number; top: number } | null>(null);
-  const { id, ip, rtspPort, onvifPort, username, streamPath, streamAuto } = camera;
+  const { id, ip, rtspPort, onvifPort, username, streamPath, streamAuto, flipX, flipY } = camera;
 
   // Alignment: ~5 times a second find the hot target and report its sub-pixel position.
   useEffect(() => {
@@ -75,13 +75,16 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
       const y1 = Math.min(height, Math.ceil((blob.y1 + 2) * factor));
       const centroid = refineCentroid(context.getImageData(x0, y0, x1 - x0, y1 - y0), blob.threshold);
       if (!centroid) return report(null);
-      report({ x: x0 + centroid.x, y: y0 + centroid.y, width, height, scale: Math.min(rect.width / width, rect.height / height) });
+      // The canvas holds the camera's own orientation; the fix is where the operator sees the target.
+      const x = x0 + centroid.x;
+      const y = y0 + centroid.y;
+      report({ x: flipX ? width - x : x, y: flipY ? height - y : y, width, height, scale: Math.min(rect.width / width, rect.height / height) });
     }, MEASURE_MS);
     return () => {
       window.clearInterval(timer);
       report(null);
     };
-  }, [measure, active, id]);
+  }, [measure, active, id, flipX, flipY]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -256,7 +259,12 @@ export const VideoSurface = memo(function VideoSurface({ camera, active, restart
 
   return (
     <>
-      <canvas ref={canvasRef} className="video-canvas" data-camera={id} style={{ filter: paletteFilter(palette) ?? undefined }} />
+      <canvas
+        ref={canvasRef}
+        className="video-canvas"
+        data-camera={id}
+        style={{ filter: paletteFilter(palette) ?? undefined, transform: flipX || flipY ? `scale(${flipX ? -1 : 1}, ${flipY ? -1 : 1})` : undefined }}
+      />
       {marker && <i className="target-marker" style={{ left: marker.left, top: marker.top }} title="Найденная мишень" />}
     </>
   );

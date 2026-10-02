@@ -131,6 +131,10 @@ export interface CameraConfig {
   profile: string;
   autoConnect: boolean;
   osd: boolean;
+  /** Mirror the picture left ↔ right (on screen, in the split recording and for measuring). */
+  flipX: boolean;
+  /** Mirror the picture top ↔ bottom; with `flipX` it is a 180° turn. */
+  flipY: boolean;
   /** One zoom step (wheel notch or button press), percent of the zoom range. */
   zoomStepPercent: number;
   /** One focus step, percent of the focus range. */
@@ -203,6 +207,92 @@ export interface AlignmentConfig {
   stableMs: number;
 }
 
+export type RangefinderTargetMode = "first" | "last" | "multi";
+/** Where the distance is shown next to the reticle. */
+export type RangeOverlay = "both" | "camera1" | "camera2" | "off";
+
+/** Rangefinder sights: mil-dot tactical, ACOG-like chevron, LRF ranging box, holographic collimator. */
+export type RangeSightStyle = "tactical" | "chevron" | "box" | "collimator";
+
+export interface RangeSightConfig {
+  /** Replaces the camera reticles on the panes that show the distance (not during alignment). */
+  enabled: boolean;
+  style: RangeSightStyle;
+  color: string;
+  /** Percent of the drawn size. */
+  scale: number;
+  /** Percent; the collimator glows. */
+  brightness: number;
+  /** Laser aiming point relative to each pane centre, CSS px (boresight of the rangefinder to the camera). */
+  offsets: Record<"camera1" | "camera2", { x: number; y: number }>;
+}
+
+export interface RangefinderConfig {
+  /** Which target the module reports: the first (nearest), the last (farthest) or up to three. */
+  targetMode: RangefinderTargetMode;
+  /** Continuous ranging rate, 1–10 Hz. */
+  frequencyHz: number;
+  /** Continuous ranging stops by itself after this many seconds (laser life). */
+  continuousSeconds: number;
+  overlay: RangeOverlay;
+  /** Range once when a D-pad move ends, after the platform has settled. */
+  rangeAfterJog: boolean;
+  sight: RangeSightConfig;
+}
+
+/** One target of a range result; `code` 0 single, 1 a nearer target exists, 2 a farther one, 3 both, 4 out of range. */
+export interface RangeTarget {
+  index: number;
+  code: number;
+  /** Metres; null when out of range. */
+  distance: number | null;
+}
+
+/** One measurement: every target the module reported for it. */
+export interface RangeReading {
+  targets: RangeTarget[];
+  /** Epoch ms. */
+  at: number;
+  continuous: boolean;
+  faults: string[];
+}
+
+export interface RangefinderInfo {
+  serial: string;
+  fpga: string;
+  mcu: string;
+  hardware: string;
+  pulsesTotal: number | null;
+  pulsesSincePowerOn: number | null;
+  gateMin: number | null;
+  gateMax: number | null;
+}
+
+export interface RangefinderSelfTest {
+  ok: boolean;
+  echo: number;
+  powerOk: boolean;
+  faults: string[];
+  raw: string;
+}
+
+export type RangefinderEvent =
+  | { kind: "target"; target: RangeTarget; continuous: boolean }
+  | { kind: "fault"; flags: number; faults: string[] }
+  | { kind: "continuous"; on: boolean; reason: string }
+  | { kind: "link"; connected: boolean; message: string };
+
+/** Live rangefinder state in the window. */
+export interface RangefinderStatus {
+  /** null until the first contact. */
+  connected: boolean | null;
+  message: string;
+  continuous: boolean;
+  reading: RangeReading | null;
+  /** Newest first. */
+  history: RangeReading[];
+}
+
 /** Which video panes are shown; a hidden camera keeps streaming (recording, measuring). */
 export type VideoView = "both" | "camera1" | "camera2";
 
@@ -216,6 +306,7 @@ export interface AppConfig {
   platformPort: number;
   rangefinderIp: string;
   rangefinderPort: number;
+  rangefinder: RangefinderConfig;
   relayIp: string;
   relayPort: number;
   modules: DeviceModule[];

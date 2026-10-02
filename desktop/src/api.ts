@@ -2,7 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { createDefaultConfig, migrateConfig, moduleName } from "./config";
-import type { AppConfig, CameraConfig, FoundCamera, MeasureParams, ProbeResult, ProbeTarget, RecordingEvent, RockingEvent, RockingProfile, StreamEvent } from "./types";
+import type { AppConfig, CameraConfig, FoundCamera, MeasureParams, ProbeResult, ProbeTarget, RangeTarget, RangefinderEvent, RangefinderInfo, RangefinderSelfTest, RangefinderTargetMode, RecordingEvent, RockingEvent, RockingProfile, StreamEvent } from "./types";
 
 export type JogDirection = "left" | "right" | "up" | "down";
 
@@ -233,6 +233,46 @@ export async function onRecordingState(handler: (event: RecordingEvent) => void)
 export async function onRockingState(handler: (event: RockingEvent) => void): Promise<UnlistenFn> {
   if (!inTauri()) return () => undefined;
   return listen<RockingEvent>("rocking-state", (event) => handler(event.payload));
+}
+
+/** One range measurement (fires the laser once); the result also arrives as a `rangefinder` event. */
+export async function rangefinderMeasure(ip: string, port: number): Promise<RangeTarget[]> {
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  return invoke<RangeTarget[]>("rangefinder_measure", { ip, port });
+}
+
+/** Starts continuous ranging (it stops by itself after `maxSeconds`) or stops it. */
+export async function rangefinderContinuous(ip: string, port: number, on: boolean, frequencyHz: number, maxSeconds: number): Promise<void> {
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  await invoke("rangefinder_continuous", { ip, port, on, frequencyHz, maxSeconds });
+}
+
+export async function rangefinderTargetMode(ip: string, port: number, mode: RangefinderTargetMode): Promise<void> {
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  await invoke("rangefinder_target_mode", { ip, port, mode });
+}
+
+/** Writes the given range gate limits (metres) and returns the gate the module holds. */
+export async function rangefinderGates(ip: string, port: number, gates: { min?: number; max?: number } = {}): Promise<{ min: number | null; max: number | null }> {
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  return invoke("rangefinder_gates", { ip, port, min: gates.min ?? null, max: gates.max ?? null });
+}
+
+/** Built-in test of the module (fires the laser once). */
+export async function rangefinderSelfTest(ip: string, port: number): Promise<RangefinderSelfTest> {
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  return invoke<RangefinderSelfTest>("rangefinder_self_test", { ip, port });
+}
+
+/** Serial number, versions, pulse counters and range gate (no laser emission). */
+export async function rangefinderInfo(ip: string, port: number): Promise<RangefinderInfo> {
+  if (!inTauri()) throw new Error(BROWSER_MODE);
+  return invoke<RangefinderInfo>("rangefinder_info", { ip, port });
+}
+
+export async function onRangefinder(handler: (event: RangefinderEvent) => void): Promise<UnlistenFn> {
+  if (!inTauri()) return () => undefined;
+  return listen<RangefinderEvent>("rangefinder", (event) => handler(event.payload));
 }
 
 /** Writes a diagnostic line into the native log (used for video timing measurements). */

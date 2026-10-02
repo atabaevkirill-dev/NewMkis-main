@@ -290,7 +290,8 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
   notify: Notify;
 }) {
   const [open, setOpen] = useState<SectionId | null>("network");
-  const accent = side === "left" ? "blue" : "amber";
+  // The drawer sits on the side of its pane (it moves when the panes are swapped); the accent stays with the camera.
+  const accent = camera.id === "camera1" ? "blue" : "amber";
   const toggle = (id: SectionId) => setOpen((current) => (current === id ? null : id));
   const step = (mode: "zoom" | "focus", direction: 1 | -1) =>
     lensStep(camera, mode, direction, (error) => notify(`${label} · ${String(error)}`, "error"));
@@ -309,7 +310,7 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
         <i className={`dot ${accent}`} />
         <div>
           <strong>{label}</strong>
-          <small>{side === "left" ? "оптическая" : "тепловизионная · эталон"}</small>
+          <small>{camera.id === "camera1" ? "оптическая" : "тепловизионная · эталон"}</small>
         </div>
         <span className={`link-state ${probe?.connected ? "on" : ""}`} title={probe?.error ?? undefined}>
           {probe ? (probe.connected ? "связь" : "нет связи") : "—"}
@@ -433,7 +434,25 @@ export function CameraDrawer({ camera, side, label, otherLabel, probe, video, st
           </Section>
         )}
 
-        <Section title="Отображение" open={open === "display"} onToggle={() => toggle("display")}>
+        <Section
+          title="Отображение"
+          badge={[camera.flipX && "↔", camera.flipY && "↕"].filter(Boolean).join(" ") || undefined}
+          open={open === "display"}
+          onToggle={() => toggle("display")}
+        >
+          <div className="setting-line">
+            <span>
+              Отразить по горизонтали <small>лево ↔ право</small>
+            </span>
+            <Toggle value={camera.flipX} onChange={(flipX) => onChange({ flipX })} />
+          </div>
+          <div className="setting-line">
+            <span>
+              Отразить по вертикали <small>верх ↔ низ · вместе с горизонталью — поворот на 180°</small>
+            </span>
+            <Toggle value={camera.flipY} onChange={(flipY) => onChange({ flipY })} />
+          </div>
+          <p className="hint">Отражение видно на экране, в сплит-записи, в сведении и точках тепловизора. Отдельная запись без перекодирования остаётся как отдаёт камера. Кнопки поворотки инвертируются отдельно (TL.0009 → «Инверт PAN/TILT»).</p>
           <div className="setting-line">
             <span>
               OSD камеры <small>имя · FPS · ONVIF</small>

@@ -107,8 +107,14 @@ export function ThermalLayer({ camera, frameWidth, frameHeight, paneRef, onSpots
         const config = current.thermal;
         const canvas = paneRef.current?.querySelector<HTMLCanvasElement>("canvas.video-canvas") ?? null;
         const extremes = wantsExtremes(config) && canvas ? findExtremes(canvas, scratch) : null;
+        // Points and markers live in the picture as shown; the camera and the canvas use its own
+        // orientation. Mirroring is its own inverse, so one function converts both ways.
+        const orient = (point: Point): Point => ({ x: current.flipX ? 1 - point.x : point.x, y: current.flipY ? 1 - point.y : point.y });
         const slots = config.spots.flatMap((spot, index) => (spot.enabled ? [index] : []));
-        const points: [number, number][] = slots.map((index) => [config.spots[index].x, config.spots[index].y]);
+        const points: [number, number][] = slots.map((index) => {
+          const point = orient(config.spots[index]);
+          return [point.x, point.y];
+        });
         if (extremes) points.push([extremes.hot.x, extremes.hot.y], [extremes.cold.x, extremes.cold.y]);
         let values: (number | null)[] = points.map(() => null);
         let error: string | null = null;
@@ -124,7 +130,7 @@ export function ThermalLayer({ camera, frameWidth, frameHeight, paneRef, onSpots
         slots.forEach((slot, index) => {
           spots[slot] = values[index];
         });
-        const extreme = (point: Point | undefined, value: number | null) => (point ? { ...point, value } : null);
+        const extreme = (point: Point | undefined, value: number | null) => (point ? { ...orient(point), value } : null);
         report({ spots, hot: extreme(extremes?.hot, values[slots.length] ?? null), cold: extreme(extremes?.cold, values[slots.length + 1] ?? null), error });
       } finally {
         busy = false;

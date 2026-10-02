@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
-import { Activity, Camera, Check, ChevronUp, CircleDot, Eye, EyeOff, FileText, FolderOpen, LocateFixed, Pencil, Play, Plus, Radio, RefreshCw, Square, Trash2, Video, X } from "lucide-react";
-import { chooseRecordingDirectory, probeModules, runPlatformSelfTest, startRockingProfile, stopRockingProfile } from "./api";
+import { Activity, Camera, Check, ChevronUp, CircleDot, Crosshair, Eye, EyeOff, FileText, FolderOpen, LocateFixed, Pencil, Play, Plus, Radio, RefreshCw, Ruler, Square, Trash2, Video, X } from "lucide-react";
+import { chooseRecordingDirectory, probeModules, rangefinderGates, rangefinderInfo, rangefinderSelfTest, runPlatformSelfTest, startRockingProfile, stopRockingProfile } from "./api";
+import { describeCode, formatMetres, mainTarget, rangeLabel } from "./rangefinder";
 import {
   DEFAULT_MODULE_NAMES,
   KIND_LABELS,
@@ -9,6 +10,10 @@ import {
   MAX_NAME_LENGTH,
   MODULE_PRESETS,
   PLATFORM_LIMITS,
+  RANGEFINDER_LIMITS,
+  RETICLE_COLORS,
+  SIGHT_LIMITS,
+  SIGHT_STYLES,
   isIPv4,
   moduleName,
   profileError,
@@ -18,18 +23,19 @@ import {
   validateModuleDraft,
   type ModuleDraft,
 } from "./config";
-import { selfTestRecord, tcpRecord, testKey } from "./report";
+import { moduleKinds, rangefinderSelfTestRecord, selfTestRecord, tcpRecord, testKey } from "./report";
 import { Countdown, NumberField, Toggle, useConfirm } from "./ui";
 import type { JogControl } from "./useJog";
 import type { SplitStatus } from "./splitRecorder";
-import type { AppConfig, CameraConfig, DeviceKind, ModuleView, Notify, ProbeResult, RecordingConfig, RecordingEvent, RockingEvent, RockingProfile, TestRecord, VideoStats } from "./types";
+import type { AppConfig, CameraConfig, DeviceKind, ModuleView, Notify, ProbeResult, RangeOverlay, RangeSightConfig, RangeSightStyle, RangefinderConfig, RangefinderInfo, RangefinderSelfTest, RangefinderStatus, RangefinderTargetMode, RecordingConfig, RecordingEvent, RockingEvent, RockingProfile, TestRecord, VideoStats } from "./types";
 
-export type SystemTab = "summary" | "platform" | "tests" | "record";
+export type SystemTab = "summary" | "platform" | "rangefinder" | "tests" | "record";
 type SetConfig = Dispatch<SetStateAction<AppConfig>>;
 
 const TABS: { id: SystemTab; label: string; icon: ReactNode }[] = [
   { id: "summary", label: "Сводка", icon: <Activity /> },
   { id: "platform", label: "Поворотка", icon: <LocateFixed /> },
+  { id: "rangefinder", label: "Дальномер", icon: <Ruler /> },
   { id: "tests", label: "Тесты", icon: <Radio /> },
   { id: "record", label: "Запись", icon: <Video /> },
 ];
@@ -296,6 +302,240 @@ function testSummary(record: TestRecord | undefined): string {
   return `${record.ok ? "✓" : "✗"} ${record.detail}`;
 }
 
+const TARGET_MODES: { value: RangefinderTargetMode; label: string; title: string }[] = [
+  { value: "first", label: "Первая", title: "Ближайшая цель: дальность до первого отражения" },
+  { value: "last", label: "Последняя", title: "Дальняя цель: сквозь ветки, сетку, дождь" },
+  { value: "multi", label: "Несколько", title: "До трёх целей за один замер" },
+];
+
+/**
+ * The rangefinder: ranging (single and continuous), its settings and the module. Results arrive as
+ * events and show at the reticle and in the status bar too; gates are kept by the module itself.
+ */
+function RangefinderPanel({ config, setConfig, status, onRange, onContinuous, onRecords, notify }: {
+  config: AppConfig;
+  setConfig: SetConfig;
+  status: RangefinderStatus;
+  onRange: () => void;
+  onContinuous: (on: boolean) => void;
+  onRecords: (records: TestRecord[]) => void;
+  notify: Notify;
+}) {
+  const { rangefinderIp: ip, rangefinderPort: port, rangefinder: settings } = config;
+  const name = moduleName(config, "rangefinder");
+  const [info, setInfo] = useState<RangefinderInfo | null>(null);
+  const [gates, setGates] = useState<{ min: number; max: number } | null>(null);
+  const [test, setTest] = useState<RangefinderSelfTest | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const patch = (update: Partial<RangefinderConfig>) => setConfig((current) => ({ ...current, rangefinder: { ...current.rangefinder, ...update } }));
+  const sight = settings.sight;
+  const patchSight = (update: Partial<RangeSightConfig>) =>
+    setConfig((current) => ({ ...current, rangefinder: { ...current.rangefinder, sight: { ...current.rangefinder.sight, ...update } } }));
+  const patchOffset = (id: "camera1" | "camera2", update: Partial<{ x: number; y: number }>) =>
+    patchSight({ offsets: { ...sight.offsets, [id]: { ...sight.offsets[id], ...update } } });
+
+  const loadInfo = async () => {
+    setBusy("info");
+    try {
+      const value = await rangefinderInfo(ip, port);
+      setInfo(value);
+      if (value.gateMin !== null && value.gateMax !== null) setGates({ min: value.gateMin, max: value.gateMax });
+    } catch (error) {
+      notify(`${name}: ${String(error)}`, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+  // Opening the panel reads the module (no laser emission).
+  useEffect(() => {
+    void loadInfo();
+  }, [ip, port]);
+
+  const writeGates = async () => {
+    if (!gates) return;
+    setBusy("gates");
+    try {
+      const value = await rangefinderGates(ip, port, gates);
+      if (value.min !== null && value.max !== null) setGates({ min: value.min, max: value.max });
+      notify(`${name}: строб ${value.min ?? "—"}–${value.max ?? "—"} м записан в модуль`);
+    } catch (error) {
+      notify(`${name}: ${String(error)}`, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const selfTest = async () => {
+    setBusy("selftest");
+    try {
+      const result = await rangefinderSelfTest(ip, port);
+      setTest(result);
+      const record = rangefinderSelfTestRecord(result);
+      onRecords([record]);
+      notify(`${name} · самодиагностика: ${record.detail}`, record.ok ? "info" : "error");
+    } catch (error) {
+      onRecords([{ moduleId: "rangefinder", kind: "selftest", ok: false, detail: `ошибка связи · ${String(error)}`, at: new Date().toISOString() }]);
+      notify(`${name} · ${String(error)}`, "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const reading = status.reading;
+  const label = rangeLabel(reading);
+  const main = mainTarget(reading);
+  const age = reading ? Math.max(0, Math.round((Date.now() - reading.at) / 1000)) : 0;
+  const [gateLow, gateHigh] = RANGEFINDER_LIMITS.gate;
+  const gatesValid = gates !== null && gates.min >= gateLow && gates.max <= gateHigh && gates.min < gates.max;
+  const overlays: { value: RangeOverlay; label: string }[] = [
+    { value: "both", label: "на обеих камерах" },
+    { value: "camera1", label: moduleName(config, "camera1") },
+    { value: "camera2", label: moduleName(config, "camera2") },
+    { value: "off", label: "не показывать" },
+  ];
+  const linkText = status.connected ? "связь" : status.connected === false ? "нет связи" : "—";
+
+  return (
+    <div className="rangefinder-panel">
+      <div className="range-block">
+        <div className="panel-head">
+          <strong>{name}</strong>
+          <span className={`link-dot ${status.connected ? "on" : status.connected === false ? "off" : ""}`} title={status.message || undefined}>{linkText}</span>
+          <code>{ip}:{port}</code>
+        </div>
+        <div className={`range-readout ${label?.stale ? "stale" : ""}`} title={label?.note || undefined}>
+          <strong>{main?.distance !== null && main?.distance !== undefined ? main.distance.toFixed(1) : "—"}</strong>
+          <span>м</span>
+        </div>
+        <p className="hint" title={status.message || undefined}>
+          {reading
+            ? `${describeCode(main?.code ?? 0)} · ${age} с назад${reading.continuous ? " · непрерывно" : ""}${reading.faults.filter((fault) => fault !== "нет отражения").length ? ` · ${reading.faults.join(", ")}` : ""}`
+            : status.connected === false ? status.message : "замеров ещё не было"}
+        </p>
+        {reading && reading.targets.length > 1 && <p className="hint">{reading.targets.map((target) => `${target.index + 1}: ${formatMetres(target.distance)}`).join(" · ")}</p>}
+        <div className="range-actions">
+          <button className="primary" type="button" onClick={onRange} disabled={status.continuous} title="Один замер · клавиша R">
+            <Crosshair /> Замер · R
+          </button>
+          <button
+            type="button"
+            className={status.continuous ? "active" : ""}
+            onClick={() => onContinuous(!status.continuous)}
+            title={status.continuous ? "Остановить непрерывный замер · Esc" : `Непрерывно ${settings.frequencyHz} Гц, автостоп через ${settings.continuousSeconds} с`}
+          >
+            {status.continuous ? <Square /> : <Play />} {status.continuous ? "Стоп" : "Непрерывно"}
+          </button>
+        </div>
+      </div>
+      <div className="range-settings">
+        <div className="setting-line">
+          <span>Цель</span>
+          <div className="segmented">
+            {TARGET_MODES.map((mode) => (
+              <button key={mode.value} type="button" className={settings.targetMode === mode.value ? "active" : ""} onClick={() => patch({ targetMode: mode.value })} title={mode.title}>
+                {mode.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="setting-line">
+          <span>Непрерывно <small>частота · автостоп</small></span>
+          <div className="inline-fields">
+            <NumberField value={settings.frequencyHz} integer unit="Гц" className="compact" min={RANGEFINDER_LIMITS.frequencyHz[0]} max={RANGEFINDER_LIMITS.frequencyHz[1]} onChange={(frequencyHz) => patch({ frequencyHz })} />
+            <NumberField value={settings.continuousSeconds} integer unit="с" className="compact" min={RANGEFINDER_LIMITS.continuousSeconds[0]} max={RANGEFINDER_LIMITS.continuousSeconds[1]} onChange={(continuousSeconds) => patch({ continuousSeconds })} />
+          </div>
+        </div>
+        <div className="setting-line">
+          <span>Строб, м <small>ближе и дальше не мерить</small></span>
+          <div className="inline-fields">
+            <NumberField value={gates?.min ?? 0} integer className="compact" min={gateLow} max={gateHigh} onChange={(min) => setGates((current) => ({ min, max: current?.max ?? gateHigh }))} />
+            <NumberField value={gates?.max ?? 0} integer className="compact" min={gateLow} max={gateHigh} onChange={(max) => setGates((current) => ({ min: current?.min ?? gateLow, max }))} />
+            <button type="button" className="chip" onClick={() => void writeGates()} disabled={!gatesValid || busy !== null} title="Записать строб в модуль">Записать</button>
+          </div>
+        </div>
+        <div className="setting-line">
+          <span>Дальность у прицела</span>
+          <select value={settings.overlay} onChange={(event) => patch({ overlay: event.target.value as RangeOverlay })}>
+            {overlays.map((item) => (
+              <option key={item.value} value={item.value}>{item.label}</option>
+            ))}
+          </select>
+        </div>
+        <div className="setting-line">
+          <span>Замер после остановки поворотки <small>когда отпущена кнопка D-pad</small></span>
+          <Toggle value={settings.rangeAfterJog} onChange={(rangeAfterJog) => patch({ rangeAfterJog })} />
+        </div>
+      </div>
+      <div className="range-sight-settings">
+        <div className="setting-line">
+          <span>Прицел дальномера <small>вместо перекрестий</small></span>
+          <div className="inline-fields">
+            <select
+              value={sight.style}
+              title={SIGHT_STYLES.find((item) => item.value === sight.style)?.title}
+              onChange={(event) => {
+                const style = event.target.value as RangeSightStyle;
+                patchSight({ style, color: SIGHT_STYLES.find((item) => item.value === style)?.color ?? sight.color });
+              }}
+            >
+              {SIGHT_STYLES.map((item) => (
+                <option key={item.value} value={item.value} title={item.title}>{item.label}</option>
+              ))}
+            </select>
+            <Toggle value={sight.enabled} onChange={(enabled) => patchSight({ enabled })} title="Показывать прицел дальномера (кнопка «Дальномер» вверху)" />
+          </div>
+        </div>
+        <div className="setting-line">
+          <span>Цвет</span>
+          <div className="swatches">
+            {RETICLE_COLORS.map((color) => (
+              <button key={color} type="button" className={color === sight.color ? "active" : ""} style={{ background: color }} onClick={() => patchSight({ color })} title={color} aria-label={`Цвет ${color}`} />
+            ))}
+            <input type="color" value={sight.color} onChange={(event) => patchSight({ color: event.target.value })} title="Свой цвет" aria-label="Свой цвет" />
+          </div>
+        </div>
+        <div className="setting-line">
+          <span>Размер · яркость</span>
+          <div className="inline-fields">
+            <NumberField value={sight.scale} integer unit="%" className="compact" min={SIGHT_LIMITS.scale[0]} max={SIGHT_LIMITS.scale[1]} onChange={(scale) => patchSight({ scale })} />
+            <NumberField value={sight.brightness} integer unit="%" className="compact" min={SIGHT_LIMITS.brightness[0]} max={SIGHT_LIMITS.brightness[1]} onChange={(brightness) => patchSight({ brightness })} />
+          </div>
+        </div>
+        {(["camera1", "camera2"] as const).map((id) => (
+          <div className="setting-line" key={id}>
+            <span>Луч на {moduleName(config, id)} <small>X · Y, px от центра</small></span>
+            <div className="inline-fields">
+              <NumberField value={sight.offsets[id].x} integer className="compact" min={SIGHT_LIMITS.offset[0]} max={SIGHT_LIMITS.offset[1]} onChange={(x) => patchOffset(id, { x })} />
+              <NumberField value={sight.offsets[id].y} integer className="compact" min={SIGHT_LIMITS.offset[0]} max={SIGHT_LIMITS.offset[1]} onChange={(y) => patchOffset(id, { y })} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="range-module">
+        <div className="panel-head">
+          <strong>Модуль</strong>
+          <span className="muted">1535 нм · класс 1</span>
+          <button type="button" className="chip" onClick={() => void loadInfo()} disabled={busy !== null} title="Прочитать сведения (без излучения)">
+            <RefreshCw /> {busy === "info" ? "…" : "Обновить"}
+          </button>
+        </div>
+        <p title="Серийный номер (месяц.год № )">Зав. № {info?.serial ?? "—"}</p>
+        <p title="Прошивки FPGA и MCU">FPGA {info?.fpga ?? "—"} · MCU {info?.mcu ?? "—"}</p>
+        <p title={info?.hardware}>{info?.hardware ?? "—"}</p>
+        <p>Импульсов: {info?.pulsesTotal ?? "—"} · с включения {info?.pulsesSincePowerOn ?? "—"}</p>
+        <div className="range-test">
+          <button type="button" className="chip" onClick={() => void selfTest()} disabled={busy !== null || status.continuous} title="Встроенный тест модуля: один импульс лазера">
+            {busy === "selftest" ? "…" : "Самодиагностика"}
+          </button>
+          <span className={test ? (test.ok ? "pass" : "fail") : ""} title={test?.raw}>
+            {test ? (test.ok ? `норма${test.faults.includes("нет отражения") ? " · цели нет" : ` · эхо ${test.echo}`}` : test.faults.join(", ")) : "не выполнялась"}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TestsPanel({ config, setConfig, modules, testLog, onRecords, onProbeResults, onReport, notify }: {
   config: AppConfig;
   setConfig: SetConfig;
@@ -309,7 +549,7 @@ function TestsPanel({ config, setConfig, modules, testLog, onRecords, onProbeRes
   const [running, setRunning] = useState<string | null>(null);
   const [armed, confirm] = useConfirm();
   const visible = modules.filter((module) => !module.hidden);
-  const required = visible.flatMap((module) => (module.id === "platform" ? [testKey(module.id, "tcp"), testKey(module.id, "selftest")] : [testKey(module.id, "tcp")]));
+  const required = visible.flatMap((module) => moduleKinds(module.id).map((kind) => testKey(module.id, kind)));
   const passed = required.filter((key) => testLog[key]?.ok).length;
   const failed = required.filter((key) => testLog[key] && !testLog[key].ok).length;
   const pending = required.length - passed - failed;
@@ -343,11 +583,26 @@ function TestsPanel({ config, setConfig, modules, testLog, onRecords, onProbeRes
     }
   };
 
+  const rangefinderName = moduleName(config, "rangefinder");
+  const rangefinderTest = async () => {
+    setRunning("rangefinder-selftest");
+    try {
+      const record = rangefinderSelfTestRecord(await rangefinderSelfTest(config.rangefinderIp, config.rangefinderPort));
+      onRecords([record]);
+      notify(`${rangefinderName} · самодиагностика: ${record.detail}`, record.ok ? "info" : "error");
+    } catch (error) {
+      onRecords([{ moduleId: "rangefinder", kind: "selftest", ok: false, detail: `ошибка связи · ${String(error)}`, at: new Date().toISOString() }]);
+      notify(`${rangefinderName} · ${String(error)}`, "error");
+    } finally {
+      setRunning(null);
+    }
+  };
+
   return (
     <div className="tests-panel">
       <div className="panel-head">
         <strong>Проверки</strong>
-        <span className="test-counts" title="Для протокола нужны TCP-проверки всех показанных модулей и самодиагностика поворотки">
+        <span className="test-counts" title="Для протокола нужны TCP-проверки всех показанных модулей и самодиагностика поворотки и дальномера">
           <b className="pass">✓ {passed}</b> <b className="fail">✗ {failed}</b> <b>— {pending}</b>
         </span>
         <div className="spacer" />
@@ -363,10 +618,11 @@ function TestsPanel({ config, setConfig, modules, testLog, onRecords, onProbeRes
       <div className="test-grid">
         {visible.map((module) => {
           const tcp = testLog[testKey(module.id, "tcp")];
-          const self = module.id === "platform" ? testLog[testKey(module.id, "selftest")] : undefined;
-          const state = [tcp, ...(module.id === "platform" ? [self] : [])];
+          const hasSelfTest = moduleKinds(module.id).includes("selftest");
+          const self = hasSelfTest ? testLog[testKey(module.id, "selftest")] : undefined;
+          const state = [tcp, ...(hasSelfTest ? [self] : [])];
           const tone = state.some((record) => record && !record.ok) ? "fail" : state.every((record) => record?.ok) ? "pass" : "";
-          const text = module.id === "platform" ? `TCP ${testSummary(tcp)} · самодиагностика ${testSummary(self)}` : testSummary(tcp);
+          const text = hasSelfTest ? `TCP ${testSummary(tcp)} · самодиагностика ${testSummary(self)}` : testSummary(tcp);
           return (
             <div className={`test-row ${tone}`} key={module.id}>
               <strong title={module.name}>{module.name}</strong>
@@ -377,6 +633,11 @@ function TestsPanel({ config, setConfig, modules, testLog, onRecords, onProbeRes
                 {module.id === "platform" && (
                   <button type="button" className={armed ? "armed" : ""} onClick={() => confirm(() => void selfTest())} disabled={running !== null} title="Самодиагностика: оси придут в движение">
                     {armed ? "Оси двинутся — да?" : "Самодиагностика"}
+                  </button>
+                )}
+                {module.id === "rangefinder" && (
+                  <button type="button" onClick={() => void rangefinderTest()} disabled={running !== null} title="Встроенный тест модуля: один импульс лазера (класс 1, безопасен для глаз)">
+                    Самодиагностика
                   </button>
                 )}
               </div>
@@ -477,7 +738,7 @@ function RecordPanel({ config, setConfig, control }: { config: AppConfig; setCon
   );
 }
 
-export function SystemDrawer({ tab, setTab, config, setConfig, modules, probes, probing, onProbe, onProbeResults, testLog, onTestRecords, onReport, jog, rocking, recording, notify, onClose }: {
+export function SystemDrawer({ tab, setTab, config, setConfig, modules, probes, probing, onProbe, onProbeResults, testLog, onTestRecords, onReport, jog, rocking, recording, rangefinder, onRange, onRangeContinuous, notify, onClose }: {
   tab: SystemTab;
   setTab: (tab: SystemTab) => void;
   config: AppConfig;
@@ -493,6 +754,9 @@ export function SystemDrawer({ tab, setTab, config, setConfig, modules, probes, 
   jog: JogControl;
   rocking: RockingEvent | null;
   recording: RecordingControl;
+  rangefinder: RangefinderStatus;
+  onRange: () => void;
+  onRangeContinuous: (on: boolean) => void;
   notify: Notify;
   onClose: () => void;
 }) {
@@ -512,6 +776,9 @@ export function SystemDrawer({ tab, setTab, config, setConfig, modules, probes, 
       <div className="system-body">
         {tab === "summary" && <ModulesPanel modules={modules} probes={probes} probing={probing} onProbe={onProbe} setConfig={setConfig} notify={notify} />}
         {tab === "platform" && <PlatformPanel config={config} setConfig={setConfig} jog={jog} rocking={rocking} notify={notify} />}
+        {tab === "rangefinder" && (
+          <RangefinderPanel config={config} setConfig={setConfig} status={rangefinder} onRange={onRange} onContinuous={onRangeContinuous} onRecords={onTestRecords} notify={notify} />
+        )}
         {tab === "tests" && (
           <TestsPanel config={config} setConfig={setConfig} modules={modules} testLog={testLog} onRecords={onTestRecords} onProbeResults={onProbeResults} onReport={onReport} notify={notify} />
         )}

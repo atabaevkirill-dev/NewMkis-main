@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { drawReticles } from "./Reticle";
 import { drawThermalOverlay } from "./thermal";
-import type { ReticleConfig, ThermalConfig, ThermalReadings } from "./types";
+import { drawRangeDisplay, type RangeDisplay } from "./rangefinder";
+import { drawRangeSight } from "./sightGeometry";
+import type { RangeSightConfig, ReticleConfig, ThermalConfig, ThermalReadings } from "./types";
 
 /** Encoders the webview may offer, best first; MP4/H.264 plays everywhere, WebM is the fallback. */
 const FORMATS = [
@@ -31,7 +33,14 @@ export interface SplitSource {
   canvas: HTMLCanvasElement;
   /** Canvas `filter` that gives the picture the palette shown on screen, or null. */
   filter: string | null;
+  /** Mirroring shown on screen. */
+  flipX: boolean;
+  flipY: boolean;
   reticles: ReticleConfig[] | null;
+  /** Rangefinder sight with its distance, drawn instead of the reticles, or null. */
+  sight: { sight: RangeSightConfig; offset: { x: number; y: number }; display: RangeDisplay | null } | null;
+  /** Distance on the crosshair with its anchor (centre offset and size in CSS px, colour), or null. */
+  range: { display: RangeDisplay; cx: number; cy: number; top: number; color: string } | null;
   /** Thermal overlay to burn in, with the latest temperatures, or null. */
   thermal: { config: ThermalConfig; readings: ThermalReadings | null } | null;
 }
@@ -101,13 +110,24 @@ export class SplitRecorder {
       const h = video.height * scale;
       const left = x + (slot - w) / 2;
       const top = (height - h) / 2;
+      context.save();
       context.filter = source.filter ?? "none";
-      context.drawImage(video, left, top, w, h);
-      context.filter = "none";
+      context.translate(left + (source.flipX ? w : 0), top + (source.flipY ? h : 0));
+      context.scale(source.flipX ? -1 : 1, source.flipY ? -1 : 1);
+      context.drawImage(video, 0, 0, w, h);
+      context.restore();
       // Overlay settings are screen pixels over the displayed video: keep the same size relative to the picture.
       const rect = video.getBoundingClientRect();
       const shown = Math.min(rect.width / video.width, rect.height / video.height);
       if (source.reticles && shown > 0) drawReticles(context, source.reticles, x + slot / 2, height / 2, scale / shown);
+      if (source.sight && shown > 0) {
+        const k = scale / shown;
+        drawRangeSight(context, source.sight.sight, source.sight.display, x + slot / 2 + source.sight.offset.x * k, height / 2 + source.sight.offset.y * k, k);
+      }
+      if (source.range && shown > 0) {
+        const k = scale / shown;
+        drawRangeDisplay(context, source.range.display, x + slot / 2 + source.range.cx * k, height / 2 + source.range.cy * k, source.range.top, source.range.color, k);
+      }
       // A hidden pane has no screen size: its overlay is drawn as for a 540 px high pane.
       if (source.thermal) drawThermalOverlay(context, source.thermal.config, source.thermal.readings, { x: left, y: top, width: w, height: h }, shown > 0 ? scale / shown : Math.max(1, h / 540));
     };
